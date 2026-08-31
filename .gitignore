@@ -1,0 +1,30 @@
+# Phase documentation (kept locally only, not pushed to GitHub)
+phases/
+
+# Node / Frontend
+node_modules/
+dist/
+.env
+
+# Python / Backend
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+out/

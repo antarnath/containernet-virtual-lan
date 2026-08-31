@@ -1,0 +1,122 @@
+# ContainerNet — Phase 03: FastAPI Backend
+# Adds PostgreSQL database and the FastAPI backend that accepts heartbeats.
+
+services:
+  # ─── DATABASE ────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: containernet_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: containernet
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - containernet_lan
+
+  # ─── BACKEND ─────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+    container_name: containernet_backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/containernet
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    networks:
+      - containernet_lan
+
+  # ─── HOST BASE IMAGE ─────────────────────────────────────
+  host-base:
+    build:
+      context: ./infra/hosts
+      dockerfile: host-base.Dockerfile
+    image: containernet-host-base:latest
+    networks:
+      containernet_lan:
+        aliases:
+          - host-base
+
+  # ─── PC1 ─────────────────────────────────────────────────
+  pc1:
+    image: containernet-host-base:latest
+    container_name: pc1
+    hostname: pc1
+    environment:
+      - HOST_ID=pc1
+      - HOST_NAME=PC1
+      - HOST_IP=10.10.0.11
+      - BACKEND_URL=http://backend:8000
+    volumes:
+      - ./host-agent:/app/host-agent:ro
+    command: ["python3", "/app/host-agent/agent.py"]
+    networks:
+      containernet_lan:
+        ipv4_address: 10.10.0.11
+    depends_on:
+      - host-base
+      - backend
+    ports:
+      - "9101:9100"
+      - "8081:8080"
+
+  # ─── PC2 ─────────────────────────────────────────────────
+  pc2:
+    image: containernet-host-base:latest
+    container_name: pc2
+    hostname: pc2
+    environment:
+      - HOST_ID=pc2
+      - HOST_NAME=PC2
+      - HOST_IP=10.10.0.12
+      - BACKEND_URL=http://backend:8000
+    volumes:
+      - ./host-agent:/app/host-agent:ro
+    command: ["python3", "/app/host-agent/agent.py"]
+    networks:
+      containernet_lan:
+        ipv4_address: 10.10.0.12
+    depends_on:
+      - host-base
+      - backend
+    ports:
+      - "9102:9100"
+      - "8082:8080"
+
+  # ─── PC3 ─────────────────────────────────────────────────
+  pc3:
+    image: containernet-host-base:latest
+    container_name: pc3
+    hostname: pc3
+    environment:
+      - HOST_ID=pc3
+      - HOST_NAME=PC3
+      - HOST_IP=10.10.0.13
+      - BACKEND_URL=http://backend:8000
+    volumes:
+      - ./host-agent:/app/host-agent:ro
+    command: ["python3", "/app/host-agent/agent.py"]
+    networks:
+      containernet_lan:
+        ipv4_address: 10.10.0.13
+    depends_on:
+      - host-base
+      - backend
+    ports:
+      - "9103:9100"
+      - "8083:8080"
+
+# ─── VIRTUAL LAN DEFINITION ───────────────────────────────
+networks:
+  containernet_lan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24
+          gateway: 10.10.0.1
+
+volumes:
+  pgdata:

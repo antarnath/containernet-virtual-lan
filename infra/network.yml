@@ -1,0 +1,50 @@
+# ContainerNet Virtual LAN Specification
+#
+# This file is documentation only. The actual network is defined in
+# `docker-compose.yml` at the project root. This file is kept as a
+# human-readable reference for the LAN topology and for future automation
+# scripts (e.g., topology validation, IP allocator checks).
+
+network:
+  name: containernet_lan
+  driver: bridge
+  subnet: 10.10.0.0/24
+  gateway: 10.10.0.1
+
+# Each host in the virtual LAN.
+# IPs are FIXED — this makes the backend deterministic ("PC1 is always 10.10.0.11").
+hosts:
+  - id: pc1
+    name: PC1
+    ip: 10.10.0.11
+    container: pc1
+    # Services exposed by the host agent (populated in later phases):
+    #   - metrics:  9100 (Phase 02)
+    #   - messages: 8080 (Phase 05)
+    services: []
+
+  - id: pc2
+    name: PC2
+    ip: 10.10.0.12
+    container: pc2
+    services: []
+
+  - id: pc3
+    name: PC3
+    ip: 10.10.0.13
+    container: pc3
+    services: []
+
+# Reserved IPs (do not assign to hosts):
+#   10.10.0.1    -> Docker bridge gateway
+#   10.10.0.2    -> Reserved for backend service
+#   10.10.0.3    -> Reserved for frontend service
+#   10.10.0.4    -> Reserved for postgres (Phase 03)
+#   10.10.0.5    -> Reserved for redis (Phase 06)
+#   10.10.0.255  -> Broadcast address (subnet boundary)
+
+# Reserved slots for future hosts:
+#   10.10.0.14 -> PC4 (added in Phase 02)
+#   10.10.0.15 -> PC5
+#   10.10.0.16 -> PC6
+#   ...
