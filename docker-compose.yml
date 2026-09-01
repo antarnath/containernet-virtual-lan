@@ -109,6 +109,18 @@ services:
       - "9103:9100"
       - "8083:8080"
 
+  # ─── FRONTEND (React + Nginx) ────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    container_name: containernet_frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    networks:
+      - containernet_lan
+
 # ─── VIRTUAL LAN DEFINITION ───────────────────────────────
 networks:
   containernet_lan:
