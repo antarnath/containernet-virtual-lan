@@ -8,3 +8,6 @@ LABEL host.id="pc2" \
 ENV HOST_ID=pc2 \
     HOST_NAME="PC2" \
     HOST_IP=10.10.0.12
+
+# Run the host agent by default. docker-compose can override if needed.
+CMD ["python3", "/app/host-agent/agent.py"]

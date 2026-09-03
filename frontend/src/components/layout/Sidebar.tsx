@@ -7,6 +7,7 @@ const links = [
   { to: '/', label: 'Dashboard', icon: '📊' },
   { to: '/topology', label: 'Topology', icon: '🌐' },
   { to: '/hosts', label: 'Hosts', icon: '🖥️' },
+  { to: '/communications', label: 'Comms', icon: '💬' },
 ];
 
 export default function Sidebar() {
@@ -36,11 +37,6 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
-
-      <div className="px-5 py-4 border-t border-border text-xs text-muted">
-        <div>Phase 04</div>
-        <div className="mt-1">Topology Visualization</div>
-      </div>
     </aside>
   );
 }

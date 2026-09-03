@@ -2,7 +2,13 @@
 // Nginx (prod) forward /api/* to the backend container.
 
 import axios from 'axios';
-import type { HostListResponse, TopologyResponse } from '../types';
+import type {
+  Communication,
+  CommunicationCreate,
+  CommunicationListResponse,
+  HostListResponse,
+  TopologyResponse,
+} from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -20,6 +26,17 @@ export const HostsAPI = {
 export const TopologyAPI = {
   get: async (): Promise<TopologyResponse> => {
     const { data } = await api.get<TopologyResponse>('/topology');
+    return data;
+  },
+};
+
+export const CommunicationsAPI = {
+  list: async (): Promise<CommunicationListResponse> => {
+    const { data } = await api.get<CommunicationListResponse>('/communications');
+    return data;
+  },
+  trigger: async (body: CommunicationCreate): Promise<Communication> => {
+    const { data } = await api.post<Communication>('/communications', body);
     return data;
   },
 };

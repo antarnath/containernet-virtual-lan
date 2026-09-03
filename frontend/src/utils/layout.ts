@@ -44,7 +44,7 @@ export function buildLayout(topology: TopologyResponse): {
     id: `${e.source}-${e.target}`,
     source: e.source,
     target: e.target,
-    animated: true,
+    animated: false,
     type: 'smoothstep',
   }));
 

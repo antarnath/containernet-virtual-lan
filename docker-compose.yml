@@ -32,8 +32,8 @@ services:
   # ─── HOST BASE IMAGE ─────────────────────────────────────
   host-base:
     build:
-      context: ./infra/hosts
-      dockerfile: host-base.Dockerfile
+      context: .
+      dockerfile: infra/hosts/host-base.Dockerfile
     image: containernet-host-base:latest
     networks:
       containernet_lan:
@@ -42,7 +42,9 @@ services:
 
   # ─── PC1 ─────────────────────────────────────────────────
   pc1:
-    image: containernet-host-base:latest
+    build:
+      context: .
+      dockerfile: infra/hosts/pc1.Dockerfile
     container_name: pc1
     hostname: pc1
     environment:
@@ -50,9 +52,6 @@ services:
       - HOST_NAME=PC1
       - HOST_IP=10.10.0.11
       - BACKEND_URL=http://backend:8000
-    volumes:
-      - ./host-agent:/app/host-agent:ro
-    command: ["python3", "/app/host-agent/agent.py"]
     networks:
       containernet_lan:
         ipv4_address: 10.10.0.11
@@ -65,7 +64,9 @@ services:
 
   # ─── PC2 ─────────────────────────────────────────────────
   pc2:
-    image: containernet-host-base:latest
+    build:
+      context: .
+      dockerfile: infra/hosts/pc2.Dockerfile
     container_name: pc2
     hostname: pc2
     environment:
@@ -73,9 +74,6 @@ services:
       - HOST_NAME=PC2
       - HOST_IP=10.10.0.12
       - BACKEND_URL=http://backend:8000
-    volumes:
-      - ./host-agent:/app/host-agent:ro
-    command: ["python3", "/app/host-agent/agent.py"]
     networks:
       containernet_lan:
         ipv4_address: 10.10.0.12
@@ -88,7 +86,9 @@ services:
 
   # ─── PC3 ─────────────────────────────────────────────────
   pc3:
-    image: containernet-host-base:latest
+    build:
+      context: .
+      dockerfile: infra/hosts/pc3.Dockerfile
     container_name: pc3
     hostname: pc3
     environment:
@@ -96,9 +96,6 @@ services:
       - HOST_NAME=PC3
       - HOST_IP=10.10.0.13
       - BACKEND_URL=http://backend:8000
-    volumes:
-      - ./host-agent:/app/host-agent:ro
-    command: ["python3", "/app/host-agent/agent.py"]
     networks:
       containernet_lan:
         ipv4_address: 10.10.0.13

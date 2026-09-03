@@ -22,9 +22,14 @@ export default {
           '0%, 100%': { opacity: '1' },
           '50%': { opacity: '0.4' },
         },
+        slide_in: {
+          '0%': { transform: 'translateX(120%)', opacity: '0' },
+          '100%': { transform: 'translateX(0)', opacity: '1' },
+        },
       },
       animation: {
         'pulse-dot': 'pulse_dot 1.5s ease-in-out infinite',
+        'slide-in': 'slide_in 200ms ease-out',
       },
     },
   },

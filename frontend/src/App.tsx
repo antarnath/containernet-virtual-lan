@@ -6,6 +6,7 @@ import Layout from './components/layout/Layout';
 import Dashboard from './pages/Dashboard';
 import TopologyPage from './pages/TopologyPage';
 import HostsPage from './pages/HostsPage';
+import CommunicationsPage from './pages/CommunicationsPage';
 
 export default function App() {
   return (
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/topology" element={<TopologyPage />} />
           <Route path="/hosts" element={<HostsPage />} />
+          <Route path="/communications" element={<CommunicationsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

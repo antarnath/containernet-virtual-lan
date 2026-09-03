@@ -7,9 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Host, HostStatus
 from app.schemas.heartbeat import HeartbeatIn
+from app.ws import publish
 
 
 ONLINE_THRESHOLD = timedelta(seconds=15)
+
+
+def _status_str(s) -> str:
+    return s.value if hasattr(s, "value") else s
 
 
 async def upsert_heartbeat(session: AsyncSession, hb: HeartbeatIn) -> Host:
@@ -18,6 +23,7 @@ async def upsert_heartbeat(session: AsyncSession, hb: HeartbeatIn) -> Host:
     host = result.scalar_one_or_none()
 
     now = datetime.now(timezone.utc)
+    previous_status: str | None = None
 
     if host is None:
         host = Host(
@@ -29,6 +35,7 @@ async def upsert_heartbeat(session: AsyncSession, hb: HeartbeatIn) -> Host:
         )
         session.add(host)
     else:
+        previous_status = _status_str(host.status)
         host.hostname = hb.host_name
         host.ip_address = hb.host_ip
         host.status = HostStatus.ONLINE
@@ -36,6 +43,15 @@ async def upsert_heartbeat(session: AsyncSession, hb: HeartbeatIn) -> Host:
 
     await session.commit()
     await session.refresh(host)
+
+    # Emit event only on transition (skip the steady-state heartbeat spam).
+    new_status = _status_str(host.status)
+    if previous_status != new_status:
+        publish(
+            "host_status_change",
+            {"host_id": host.host_id, "status": new_status},
+        )
+
     return host
 
 
@@ -48,7 +64,12 @@ async def sweep_offline_hosts(session: AsyncSession) -> int:
         if host.last_seen is None or host.last_seen < cutoff:
             host.status = HostStatus.OFFLINE
             count += 1
-    await session.commit()
+            publish(
+                "host_status_change",
+                {"host_id": host.host_id, "status": _status_str(host.status)},
+            )
+    if count:
+        await session.commit()
     return count
 
 
@@ -66,7 +87,7 @@ async def get_topology(session: AsyncSession) -> dict:
             "id": h.host_id,
             "label": h.hostname,
             "ip": h.ip_address,
-            "status": h.status.value if hasattr(h.status, "value") else h.status,
+            "status": _status_str(h.status),
         }
         for h in hosts
     ]

@@ -10,4 +10,5 @@ ENV HOST_ID=pc1 \
     HOST_NAME="PC1" \
     HOST_IP=10.10.0.11
 
-# Command overridden in docker-compose.yml to run the agent.
+# Run the host agent by default. docker-compose can override if needed.
+CMD ["python3", "/app/host-agent/agent.py"]

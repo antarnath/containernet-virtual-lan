@@ -1,4 +1,6 @@
 // The main interactive topology graph (React Flow + Dagre layout).
+// Active in-flight communications light up their corresponding edges
+// in bright green so the data flow is visible in real time.
 
 import { useMemo } from 'react';
 import ReactFlow, {
@@ -11,6 +13,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import { useHostStore } from '../../store/hostStore';
+import { useRealtimeStore } from '../../store/realtimeStore';
 import { buildLayout } from '../../utils/layout';
 import HostNode from './HostNode';
 
@@ -18,6 +21,7 @@ const nodeTypes = { host: HostNode };
 
 export default function TopologyView() {
   const topology = useHostStore((s) => s.topology);
+  const inFlight = useRealtimeStore((s) => s.inFlight);
 
   const { nodes, edges } = useMemo<
     { nodes: Node[]; edges: Edge[] }
@@ -27,6 +31,38 @@ export default function TopologyView() {
     }
     return buildLayout(topology);
   }, [topology]);
+
+  // Style edges: brighten any edge that corresponds to an in-flight comm.
+  // We compare in both directions because edges are unordered in our graph.
+  const styledEdges: Edge[] = edges.map((e) => {
+    const active = inFlight.some(
+      (c) =>
+        (c.source === e.source && c.target === e.target) ||
+        (c.source === e.target && c.target === e.source),
+    );
+    if (active) {
+      return {
+        ...e,
+        animated: true,
+        style: {
+          stroke: '#22c55e',
+          strokeWidth: 4,
+        },
+        label: '◀ data flowing',
+        labelStyle: { fill: '#22c55e', fontWeight: 700, fontSize: 11 },
+        labelBgStyle: { fill: '#0b1120' },
+        labelBgPadding: [4, 2],
+        zIndex: 1000,
+      };
+    }
+    // Idle edges: dim, no animation (the default React Flow dashes are
+    // distracting when no comm is happening — clear visual hierarchy).
+    return {
+      ...e,
+      animated: false,
+      style: { stroke: '#3b82f6', strokeWidth: 1.5, opacity: 0.6 },
+    };
+  });
 
   if (!topology) {
     return (
@@ -48,7 +84,7 @@ export default function TopologyView() {
     <div className="w-full h-full bg-bg rounded-lg border border-border overflow-hidden">
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={styledEdges}
         nodeTypes={nodeTypes}
         fitView
         proOptions={{ hideAttribution: true }}
@@ -67,6 +103,18 @@ export default function TopologyView() {
           maskColor="rgba(11,17,32,0.7)"
         />
       </ReactFlow>
+
+      {/* Legend */}
+      <div className="absolute bottom-4 left-4 bg-panel/90 border border-border rounded px-3 py-2 text-xs text-muted flex gap-4">
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-4 h-0.5 bg-blue-500"></span>
+          idle
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-4 h-0.5 bg-online"></span>
+          data flowing ({inFlight.length})
+        </span>
+      </div>
     </div>
   );
 }

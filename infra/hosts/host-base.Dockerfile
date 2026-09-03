@@ -28,5 +28,9 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # Default working directory
 WORKDIR /app
 
+# Copy the Host Agent source into the image. Build context is the project root
+# (set in docker-compose.yml), so host-agent/ resolves correctly.
+COPY host-agent /app/host-agent
+
 # Default command overridden in docker-compose.yml to run the agent.
 CMD ["sleep", "infinity"]

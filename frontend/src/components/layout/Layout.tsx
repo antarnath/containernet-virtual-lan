@@ -4,7 +4,9 @@ import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
+import ToastContainer from '../common/ToastContainer';
 import { useHostStore } from '../../store/hostStore';
+import { useWebSocket } from '../../hooks/useWebSocket';
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -12,7 +14,10 @@ export default function Layout() {
   const fetchHosts = useHostStore((s) => s.fetchHosts);
   const fetchTopology = useHostStore((s) => s.fetchTopology);
 
-  // Initial fetch + polling
+  // Open the singleton WebSocket on mount.
+  useWebSocket();
+
+  // Initial fetch + polling fallback (in case WS misses events).
   useEffect(() => {
     fetchHosts();
     fetchTopology();
@@ -32,6 +37,7 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+      <ToastContainer />
     </div>
   );
 }

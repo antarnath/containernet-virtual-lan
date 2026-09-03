@@ -36,3 +36,30 @@ export interface TopologyResponse {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
 }
+
+// ─── Communications ────────────────────────────────────────
+export type CommStatus = 'pending' | 'delivered' | 'failed';
+
+export interface Communication {
+  id: string;
+  source_host_id: string;
+  dest_host_id: string;
+  protocol: string;
+  payload: string;
+  data_size: number;
+  latency_ms: number | null;
+  status: CommStatus;
+  timestamp: string;
+}
+
+export interface CommunicationCreate {
+  source_host_id: string;
+  destination_host_id: string;
+  protocol: string;
+  payload: string;
+}
+
+export interface CommunicationListResponse {
+  communications: Communication[];
+  total: number;
+}

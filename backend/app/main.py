@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
+from app.api import websocket as ws_router
 from app.core import get_session, init_db
 from app.services import host_service
 
@@ -46,6 +47,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+app.include_router(ws_router.router)
 
 
 @app.get("/healthz")
