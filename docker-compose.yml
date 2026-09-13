@@ -22,6 +22,26 @@ services:
     container_name: containernet_backend
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/containernet
+      # Phase 01 — Docker orchestration.
+      # Mount the host's Docker socket so the backend can spawn containers.
+      # For production, replace with a tcp://docker-proxy:2375 socket proxy.
+      DOCKER_HOST: unix:///var/run/docker.sock
+      # Phase 01 — Admin token gate.
+      # Set to an empty string (or remove) in production to disable /api/admin/*.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-devsecret}
+    volumes:
+      # Gives the backend container access to the host's Docker daemon.
+      # Equivalent to root on the host; use a socket proxy in production.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Live-edit backend Python source. We mount just ./backend/app
+      # (not ./backend) so we don't clobber the image-installed
+      # requirements.txt / wait-for-db.sh. Edits to *.py show up after
+      # `docker compose restart backend`.
+      - ./backend/app:/app/app:ro
+      # Live-edit host-agent source from your laptop without rebuilding.
+      # /app/host-agent is the subdirectory the backend expects — its
+      # bind mount doesn't conflict with ./backend/app on /app.
+      - ./host-agent:/app/host-agent:ro
     depends_on:
       - db
     ports:

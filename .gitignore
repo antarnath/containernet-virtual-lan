@@ -1,9 +1,4 @@
-# ─── Phase documentation (kept locally only) ─────────────────
-phases/
-
-# ─── Personal notes / learning docs (not for GitHub) ─────────
-PHASE_03_COMPLETE_GUIDE.txt
-LEARN_EVERYTHING.txt
+# ─── Local personal script ───────────────────────────────────
 sync.sh
 
 # ─── Node / Frontend ──────────────────────────────────────────
@@ -39,3 +34,6 @@ Thumbs.db
 # ─── Build artifacts ──────────────────────────────────────────
 build/
 out/
+
+# ─── Internal planning docs (kept locally, not pushed) ───────
+phases/

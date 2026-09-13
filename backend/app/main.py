@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
 from app.api import websocket as ws_router
-from app.core import get_session, init_db
+from app.core import docker_client, get_session, init_db, settings
 from app.services import host_service
 
 
@@ -31,6 +31,17 @@ async def lifespan(app: FastAPI):
     await init_db()
     sweeper_task = asyncio.create_task(offline_sweeper())
     print("[main] database initialized, sweeper started")
+
+    # Phase 01 — log Docker reachability + admin-token status.
+    if docker_client.ping():
+        print(f"[main] Docker daemon reachable at {settings.DOCKER_HOST}")
+    else:
+        print(f"[main] WARNING: Docker daemon unreachable at {settings.DOCKER_HOST}")
+    if settings.ADMIN_TOKEN:
+        print("[main] admin endpoints ENABLED (X-Admin-Token required)")
+    else:
+        print("[main] admin endpoints DISABLED (ADMIN_TOKEN unset)")
+
     yield
     # Shutdown
     sweeper_task.cancel()
