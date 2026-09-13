@@ -1,8 +1,8 @@
 """Periodic heartbeat — tells the backend 'I'm alive'.
 
-In Phase 02 the backend doesn't exist yet, so heartbeats fail silently
-(logged locally). In Phase 03+ the backend will accept these and mark
-the host as online.
+Phase 03: the payload now carries ``project_id`` if set, so the backend can
+route this heartbeat into the right ``project_hosts`` row instead of the
+legacy global ``hosts`` table.
 """
 
 import asyncio
@@ -20,6 +20,9 @@ async def send_heartbeat(session: aiohttp.ClientSession) -> None:
         "host_ip": config.HOST_IP,
         "ts": datetime.now(timezone.utc).isoformat(),
     }
+    if config.PROJECT_ID:
+        payload["project_id"] = config.PROJECT_ID
+
     try:
         async with session.post(
             f"{config.BACKEND_URL}/api/health",

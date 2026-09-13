@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_router
 from app.api import websocket as ws_router
 from app.core import docker_client, get_session, init_db, settings
-from app.services import host_service
+from app.services import host_service, orphan_service
 
 
 async def offline_sweeper() -> None:
@@ -31,6 +31,21 @@ async def lifespan(app: FastAPI):
     await init_db()
     sweeper_task = asyncio.create_task(offline_sweeper())
     print("[main] database initialized, sweeper started")
+
+    # Phase 03 — orphan cleanup
+    try:
+        async for session in get_session():
+            stats = await orphan_service.sweep_orphans(session)
+            if stats["removed_containers"] or stats["removed_networks"]:
+                print(
+                    f"[main] orphan sweep removed "
+                    f"{stats['removed_containers']} container(s) and "
+                    f"{stats['removed_networks']} network(s)"
+                )
+            else:
+                print(f"[main] orphan sweep: nothing to clean ({stats['live_projects']} live projects)")
+    except Exception as exc:
+        print(f"[main] orphan sweep failed: {exc}")
 
     # Phase 01 — log Docker reachability + admin-token status.
     if docker_client.ping():

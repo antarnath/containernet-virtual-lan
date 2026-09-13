@@ -8,10 +8,15 @@ import os
 
 
 class Config:
-    # Identity — set by per-host Dockerfile
+    # Identity — set by per-host Dockerfile (or by the backend's docker run
+    # when it spawns a project host in Phase 03).
     HOST_ID: str = os.getenv("HOST_ID", "unknown")
     HOST_NAME: str = os.getenv("HOST_NAME", "Unknown")
     HOST_IP: str = os.getenv("HOST_IP", "127.0.0.1")
+
+    # Project scope — Phase 03. None for legacy static pc1/pc2/pc3, a UUID
+    # for any container the backend spawns.
+    PROJECT_ID: str | None = os.getenv("PROJECT_ID") or None
 
     # Backend — not up yet in Phase 02, but the slot is reserved for Phase 03+
     BACKEND_URL: str = os.getenv("BACKEND_URL", "http://backend:8000")

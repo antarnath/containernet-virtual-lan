@@ -1,14 +1,15 @@
 """REST endpoints for /api/projects.
 
-Phase 2 endpoints
------------------
+Phase 02 endpoints
+------------------
   POST   /api/projects                       create a project (no containers yet)
   GET    /api/projects                       list all projects (summary)
   GET    /api/projects/{project_id}          fetch one project + topology
   PATCH  /api/projects/{project_id}/nodes/{host_id}   update a node position
   DELETE /api/projects/{project_id}          delete a project + topology
 
-Phase 3 will add:
+Phase 03 endpoints
+------------------
   POST   /api/projects/{project_id}/start    spawn containers
   POST   /api/projects/{project_id}/stop     stop containers (keep project)
 """
@@ -165,9 +166,45 @@ async def delete_project(
     project_id: str,
     session: AsyncSession = Depends(get_session),
 ):
-    """Delete a project and its topology. Returns 404 if it doesn't exist."""
+    """Delete a project: stops+removes containers, removes bridge, deletes DB."""
     deleted = await project_service.delete_project(session, project_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="project not found")
     # 204 No Content: empty body
     return None
+
+
+@router.post("/{project_id}/start", response_model=ProjectDetailOut)
+async def start_project(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Spawn containers for every host on the project's bridge.
+
+    Idempotent: re-running just re-uses existing containers if any.
+    Status field becomes ``running`` (or ``partial`` if some hosts failed).
+    """
+    project = await project_service.start_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return ProjectDetailOut(
+        **_project_out(project).model_dump(),
+        hosts=[_host_out(h) for h in project.hosts],
+        edges=[_edge_out(e) for e in project.edges],
+    )
+
+
+@router.post("/{project_id}/stop", response_model=ProjectDetailOut)
+async def stop_project(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Gracefully stop every container in the project. Keeps project + DB rows."""
+    project = await project_service.stop_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return ProjectDetailOut(
+        **_project_out(project).model_dump(),
+        hosts=[_host_out(h) for h in project.hosts],
+        edges=[_edge_out(e) for e in project.edges],
+    )

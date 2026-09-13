@@ -23,6 +23,11 @@ from app.core.docker_client import get_docker_client
 # `filters={"label": LABEL_HOST}` returns only our containers.
 LABEL_HOST = "containernet.host=true"
 
+# Project-scoped label: every container spawned for a project carries
+# ``containernet.project=<project_uuid>``. The orphan sweeper uses this
+# to find containers that should no longer exist (their project was deleted).
+LABEL_PROJECT = "containernet.project"
+
 
 # ─── create ─────────────────────────────────────────────────────────────────
 
@@ -206,3 +211,182 @@ def get_container_stats(container_id: str) -> dict[str, Any] | None:
         return container.stats(stream=False)
     except APIError:
         return None
+
+
+# ─── project-scoped lifecycle ───────────────────────────────────────────────
+# These functions are the heart of Phase 03. They turn a Project row (with
+# its ProjectHost children) into real running Docker containers attached to
+# a per-project bridge, and back.
+
+def _short_project_id(project_id: str) -> str:
+    """Return the 12-char short form used in container names."""
+    return project_id.replace("-", "")[:12]
+
+
+def spawn_project_host(
+    *,
+    project_id: str,
+    host_id: str,
+    hostname: str,
+    ip_address: str,
+    project_network: str,
+    backend_network: str,
+    backend_url: str = "http://backend:8000",
+    image: str = "containernet-host-base:latest",
+) -> str:
+    """Spawn ONE container for a project host. Returns its container ID.
+
+    The container is attached to:
+      * the project's bridge (so it can talk to siblings at its assigned IP)
+      * the backend's bridge (so it can DNS-resolve ``backend`` for heartbeats)
+
+    We also pass ``extra_hosts`` as a belt-and-braces in case the DNS lookup
+    through the backend bridge fails for any reason — the host will still
+    reach the backend via a hard-coded host→IP mapping pointing at the
+    backend service on the ``containernet_lan`` subnet.
+
+    Note on Docker Desktop: spawning a container with ``network=None`` still
+    attaches it to the ``bridge`` (a.k.a. docker0) network by default. We
+    keep that attachment so the container has at least one default route —
+    removing it would require disabling the default bridge per-container,
+    which is awkward and not necessary for the LAN to function.
+    """
+    client = get_docker_client()
+    short = _short_project_id(project_id)
+
+    container = client.containers.run(
+        image=image,
+        name=f"proj-{short}-{host_id}",   # e.g. proj-abc123def456-pc-1
+        environment={
+            "PROJECT_ID": project_id,
+            "HOST_ID": host_id,
+            "HOST_NAME": hostname,
+            "HOST_IP": ip_address,
+            "BACKEND_URL": backend_url,
+        },
+        command=["python3", "/app/host-agent/agent.py"],
+        labels={
+            LABEL_HOST.split("=")[0]: "true",
+            LABEL_PROJECT.split("=")[0]: project_id,
+            "containernet.role": "host",
+        },
+        # No `network=...` here. We connect to both bridges manually below
+        # so the IP pinning + secondary attachment are guaranteed.
+        network=None,
+        # Don't hardcode ``backend``'s IP — the secondary attachment to
+        # ``containernet_lan`` lets Docker's embedded DNS resolve it for us.
+        detach=True,
+        remove=False,
+        tty=False,
+        stdin_open=False,
+    )
+
+    # 1. Project bridge with pinned IP (this is the host's LAN identity).
+    proj_net = client.networks.get(project_network)
+    proj_net.connect(container, ipv4_address=ip_address)
+
+    # 2. Backend network (no IP pinning — host only needs L3 + DNS).
+    #    We retry once because on some Docker SDK versions the connect
+    #    returns 403 if the container is still "creating".
+    backend_net = client.networks.get(backend_network)
+    for attempt in range(2):
+        try:
+            backend_net.connect(container)
+            break
+        except APIError as exc:
+            if "already connected" in str(exc).lower():
+                break
+            if attempt == 0:
+                import time; time.sleep(0.5)
+            else:
+                # Last attempt failed; raise so the caller can decide.
+                raise
+
+    return container.id
+
+
+def spawn_project_hosts(
+    *,
+    project_id: str,
+    project_network: str,
+    backend_network: str,
+    hosts: list[dict],
+) -> list[dict]:
+    """Spawn one container per host row. Returns [{host_id, container_id}].
+
+    Each ``hosts`` element must have: ``host_id``, ``hostname``, ``ip_address``.
+    Failures on individual hosts don't abort the whole batch — the rest still
+    spawn, and the failed host gets ``container_id=None`` returned.
+    """
+    results: list[dict] = []
+    for h in hosts:
+        try:
+            cid = spawn_project_host(
+                project_id=project_id,
+                host_id=h["host_id"],
+                hostname=h["hostname"],
+                ip_address=h["ip_address"],
+                project_network=project_network,
+                backend_network=backend_network,
+            )
+            results.append({"host_id": h["host_id"], "container_id": cid})
+        except Exception as exc:
+            results.append({
+                "host_id": h["host_id"],
+                "container_id": None,
+                "error": str(exc),
+            })
+    return results
+
+
+def stop_project_hosts(project_id: str, timeout: int = 5) -> int:
+    """Gracefully stop every container belonging to a project. Returns count."""
+    client = get_docker_client()
+    containers = client.containers.list(
+        all=True,
+        filters={"label": f"{LABEL_PROJECT.split('=')[0]}={project_id}"},
+    )
+    count = 0
+    for c in containers:
+        try:
+            c.stop(timeout=timeout)
+            count += 1
+        except APIError:
+            # Already stopped, or in middle of restarting — ignore.
+            pass
+    return count
+
+
+def remove_project_hosts(project_id: str, force: bool = True) -> int:
+    """Force-remove every container belonging to a project. Returns count."""
+    client = get_docker_client()
+    containers = client.containers.list(
+        all=True,
+        filters={"label": f"{LABEL_PROJECT.split('=')[0]}={project_id}"},
+    )
+    count = 0
+    for c in containers:
+        try:
+            c.remove(force=force)
+            count += 1
+        except APIError:
+            pass
+    return count
+
+
+def list_project_containers(project_id: str, all_states: bool = False) -> list[dict]:
+    """List containers for a project. Used by start_project / sweeper / debug."""
+    client = get_docker_client()
+    containers = client.containers.list(
+        all=all_states,
+        filters={"label": f"{LABEL_PROJECT.split('=')[0]}={project_id}"},
+    )
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "status": c.status,
+            "image": c.image.tags[0] if c.image.tags else str(c.image.id),
+        }
+        for c in containers
+    ]

@@ -1,5 +1,6 @@
-# ContainerNet — Phase 03: FastAPI Backend
-# Adds PostgreSQL database and the FastAPI backend that accepts heartbeats.
+# ContainerNet — Phase 03: Dynamic Host Container Lifecycle
+# All host containers are now spawned on demand by the backend via the
+# Docker SDK. The static pc1/pc2/pc3 services are gone.
 
 services:
   # ─── DATABASE ────────────────────────────────────────────
@@ -38,9 +39,9 @@ services:
       # requirements.txt / wait-for-db.sh. Edits to *.py show up after
       # `docker compose restart backend`.
       - ./backend/app:/app/app:ro
-      # Live-edit host-agent source from your laptop without rebuilding.
-      # /app/host-agent is the subdirectory the backend expects — its
-      # bind mount doesn't conflict with ./backend/app on /app.
+      # The spawned host agents read /app/host-agent at runtime. We bind-mount
+      # the host-agent folder here so edits are picked up by freshly-spawned
+      # hosts without rebuilding the host-base image.
       - ./host-agent:/app/host-agent:ro
     depends_on:
       - db
@@ -49,7 +50,9 @@ services:
     networks:
       - containernet_lan
 
-  # ─── HOST BASE IMAGE ─────────────────────────────────────
+  # ─── HOST BASE IMAGE (used by backend to spawn project hosts) ───
+  # Not a running service — just a built image. The backend issues
+  # `docker run containernet-host-base:latest ...` for every project host.
   host-base:
     build:
       context: .
@@ -59,72 +62,6 @@ services:
       containernet_lan:
         aliases:
           - host-base
-
-  # ─── PC1 ─────────────────────────────────────────────────
-  pc1:
-    build:
-      context: .
-      dockerfile: infra/hosts/pc1.Dockerfile
-    container_name: pc1
-    hostname: pc1
-    environment:
-      - HOST_ID=pc1
-      - HOST_NAME=PC1
-      - HOST_IP=10.10.0.11
-      - BACKEND_URL=http://backend:8000
-    networks:
-      containernet_lan:
-        ipv4_address: 10.10.0.11
-    depends_on:
-      - host-base
-      - backend
-    ports:
-      - "9101:9100"
-      - "8081:8080"
-
-  # ─── PC2 ─────────────────────────────────────────────────
-  pc2:
-    build:
-      context: .
-      dockerfile: infra/hosts/pc2.Dockerfile
-    container_name: pc2
-    hostname: pc2
-    environment:
-      - HOST_ID=pc2
-      - HOST_NAME=PC2
-      - HOST_IP=10.10.0.12
-      - BACKEND_URL=http://backend:8000
-    networks:
-      containernet_lan:
-        ipv4_address: 10.10.0.12
-    depends_on:
-      - host-base
-      - backend
-    ports:
-      - "9102:9100"
-      - "8082:8080"
-
-  # ─── PC3 ─────────────────────────────────────────────────
-  pc3:
-    build:
-      context: .
-      dockerfile: infra/hosts/pc3.Dockerfile
-    container_name: pc3
-    hostname: pc3
-    environment:
-      - HOST_ID=pc3
-      - HOST_NAME=PC3
-      - HOST_IP=10.10.0.13
-      - BACKEND_URL=http://backend:8000
-    networks:
-      containernet_lan:
-        ipv4_address: 10.10.0.13
-    depends_on:
-      - host-base
-      - backend
-    ports:
-      - "9103:9100"
-      - "8083:8080"
 
   # ─── FRONTEND (React + Nginx) ────────────────────────────
   frontend:
@@ -138,7 +75,10 @@ services:
     networks:
       - containernet_lan
 
-# ─── VIRTUAL LAN DEFINITION ───────────────────────────────
+# ─── NETWORK ─────────────────────────────────────────────
+# This is the backend's network. Spawned project hosts are attached to it
+# (in addition to their own per-project bridge) so they can DNS-resolve
+# `backend:8000` for heartbeats.
 networks:
   containernet_lan:
     driver: bridge

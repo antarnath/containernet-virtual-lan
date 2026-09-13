@@ -4,14 +4,17 @@ The service is the single source of truth for what happens when a project
 is created, fetched, updated, or deleted. The API layer (api/projects.py)
 is a thin wrapper that just calls these functions.
 
-Phase 2 responsibilities (this file):
+Phase 02 responsibilities
   * create_project — generate topology graph + persist
   * get_project    — fetch with eager-loaded hosts + edges
   * list_projects  — summary listing
-  * delete_project — remove (Phase 3 will cascade to containers/networks)
+  * delete_project — remove (DB rows; cascade to hosts + edges)
   * update_node_position — drag-and-drop persistence
 
-Phase 3 will add start_project / stop_project (container lifecycle).
+Phase 03 responsibilities
+  * start_project  — create bridge + spawn containers for every host
+  * stop_project   — stop every container, keep project + DB rows
+  * delete_project — stop+remove containers, remove bridge, delete DB rows
 """
 
 from __future__ import annotations
@@ -26,12 +29,21 @@ from app.models import (
     Project,
     ProjectEdge,
     ProjectHost,
+    ProjectStatus,
 )
 from app.schemas.project import ProjectCreateIn
+from app.services import container_service, network_service
 from app.services.topology_generator import (
     BadSubnetError,
     generate_topology,
 )
+
+
+# The backend's own Docker network. Spawned hosts are attached to this so
+# they can DNS-resolve `backend:8000` for heartbeats. Docker Compose
+# prefixes the directory name to user-defined network names, so the
+# container-level network is ``containernet_containernet_lan``.
+BACKEND_NETWORK = "containernet_containernet_lan"
 
 
 # ─── create ─────────────────────────────────────────────────────────────────
@@ -56,9 +68,7 @@ async def create_project(
             host_count=body.host_count,
             subnet=body.subnet,
         )
-    except BadSubnetError:
-        raise
-    except ValueError:
+    except (BadSubnetError, ValueError):
         raise
 
     network = IPv4Network(body.subnet, strict=False)
@@ -70,6 +80,7 @@ async def create_project(
         host_count=body.host_count,
         subnet=body.subnet,
         gateway=gateway,
+        status=ProjectStatus.DRAFT,
     )
     session.add(project)
     await session.flush()  # we need project.id for the FK
@@ -146,11 +157,99 @@ async def update_node_position(
     return row
 
 
-# ─── delete ─────────────────────────────────────────────────────────────────
+# ─── lifecycle: start ───────────────────────────────────────────────────────
+
+async def start_project(session: AsyncSession, project_id: str) -> Project | None:
+    """Create bridge + spawn containers for every host. Returns updated Project.
+
+    Steps
+    -----
+    1. Load project + hosts.
+    2. Create (or re-attach to) the per-project bridge network.
+    3. Spawn one container per host, attaching each to both the project
+       bridge (with a pinned IP) and the backend's network.
+    4. Update each ProjectHost row with its container_id.
+    5. Set project status to RUNNING.
+
+    Idempotent: if containers already exist for this project (e.g. partial
+    state from a previous run), we don't double-spawn — we record their IDs.
+    """
+    project = await get_project(session, project_id)
+    if project is None:
+        return None
+
+    # 1. Bridge
+    net_name = network_service.create_project_network(project)
+
+    # 2. Spawn
+    hosts_data = [
+        {
+            "host_id": h.host_id,
+            "hostname": h.hostname,
+            "ip_address": h.ip_address,
+        }
+        for h in project.hosts
+    ]
+    spawn_results = container_service.spawn_project_hosts(
+        project_id=project.id,
+        project_network=net_name,
+        backend_network=BACKEND_NETWORK,
+        hosts=hosts_data,
+    )
+
+    # 3. Persist container_ids back to DB rows
+    by_host_id = {r["host_id"]: r for r in spawn_results}
+    for h in project.hosts:
+        result = by_host_id.get(h.host_id)
+        if result and result.get("container_id"):
+            h.container_id = result["container_id"]
+            h.status = "online"  # will be corrected by first heartbeat
+
+    # 4. Status — partial if any host failed to spawn
+    any_failed = any(r.get("error") for r in spawn_results)
+    project.status = ProjectStatus.PARTIAL if any_failed else ProjectStatus.RUNNING
+
+    await session.commit()
+    await session.refresh(project)
+    return project
+
+
+# ─── lifecycle: stop ────────────────────────────────────────────────────────
+
+async def stop_project(session: AsyncSession, project_id: str) -> Project | None:
+    """Stop every container belonging to the project. Keeps project + DB rows.
+
+    Status transitions to STOPPED. ProjectHost.container_id is preserved so
+    the user can hit /start again to re-attach to the same containers.
+    """
+    project = await get_project(session, project_id)
+    if project is None:
+        return None
+
+    stopped = container_service.stop_project_hosts(project_id)
+    project.status = ProjectStatus.STOPPED
+    await session.commit()
+    await session.refresh(project)
+    return project
+
+
+# ─── lifecycle: delete ──────────────────────────────────────────────────────
 
 async def delete_project(session: AsyncSession, project_id: str) -> bool:
-    """Remove a project and its hosts/edges. Returns True if anything was
-    removed. Phase 03 will also stop+remove containers before this fires."""
+    """Tear down everything: containers, bridge, DB rows. Idempotent.
+
+    Order matters:
+      1. Force-remove containers (so the bridge isn't left dangling).
+      2. Remove the bridge network.
+      3. Delete the project row (cascade removes hosts + edges).
+    """
+    # 1. Containers
+    container_service.remove_project_hosts(project_id, force=True)
+
+    # 2. Network
+    network_service.remove_project_network(project_id)
+
+    # 3. DB
     result = await session.execute(
         select(Project).where(Project.id == project_id)
     )

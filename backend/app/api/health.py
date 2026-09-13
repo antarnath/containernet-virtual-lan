@@ -15,9 +15,9 @@ async def receive_heartbeat(
     hb: HeartbeatIn,
     session: AsyncSession = Depends(get_session),
 ):
-    host = await host_service.upsert_heartbeat(session, hb)
+    result = await host_service.upsert_heartbeat(session, hb)
     return HeartbeatOut(
         status="ok",
-        host_id=host.host_id,
-        message=f"{host.hostname} marked {host.status.value}",
+        host_id=result["host_id"],
+        message=result["message"],
     )
