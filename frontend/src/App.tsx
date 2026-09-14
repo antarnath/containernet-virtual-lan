@@ -6,6 +6,9 @@
 //   /projects                      — grid of project cards
 //   /projects/:projectId/topology  — interactive topology view + lifecycle controls
 //
+// Phase 05 adds per-project hosts:
+//   /projects/:projectId/hosts     — hosts list + live metrics for one project
+//
 // Legacy global routes (/topology, /hosts, /communications) are kept for
 // now — they still work against the static ContainerNet while we
 // transition. They'll be removed in Phase 09 polish.
@@ -31,7 +34,11 @@ export default function App() {
             path="/projects/:projectId/topology"
             element={<TopologyPage />}
           />
-          {/* Legacy global routes — kept during Phase 04 transition. */}
+          <Route
+            path="/projects/:projectId/hosts"
+            element={<HostsPage />}
+          />
+          {/* Legacy global routes — kept during transition. */}
           <Route path="/topology" element={<TopologyPage />} />
           <Route path="/hosts" element={<HostsPage />} />
           <Route path="/communications" element={<CommunicationsPage />} />

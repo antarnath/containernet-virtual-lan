@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 import { useRealtimeStore } from '../store/realtimeStore';
 import { useHostStore } from '../store/hostStore';
 import { useCommStore } from '../store/commStore';
+import { useProjectStore } from '../store/projectStore';
 import { useToastStore } from '../store/toastStore';
 import type { Communication, HostStatus } from '../types';
 
@@ -98,8 +99,34 @@ function handleEvent(
 ) {
   switch (env.type) {
     case 'host_status_change': {
-      const { host_id, status } = env.data as { host_id: string; status: HostStatus };
-      useHostStore.getState().applyHostStatusChange(host_id, status);
+      // Phase 05 — events now carry `project_id`. We filter by the currently
+      // loaded project so a status change in Project A doesn't perturb
+      // Project B's display. We also patch the per-project host list and
+      // the projectStore.current so the topology LEDs stay in sync.
+      const d = env.data as {
+        host_id: string;
+        status: HostStatus;
+        project_id?: string | null;
+      };
+      const current = useProjectStore.getState().current;
+      const targetProjectId =
+        d.project_id ?? (current ? current.id : undefined);
+      // Only apply to the per-project store if the event is for the project
+      // we are currently viewing, OR if we have no current project loaded
+      // (legacy global dashboard).
+      if (targetProjectId) {
+        if (!current || current.id === targetProjectId) {
+          useHostStore
+            .getState()
+            .applyHostStatusChange(d.host_id, d.status, targetProjectId);
+          useProjectStore.getState().applyHostStatus(d.host_id, d.status);
+        }
+      } else {
+        // Pure legacy event (pre-Phase-03 hosts): patch the global view.
+        useHostStore
+          .getState()
+          .applyHostStatusChange(d.host_id, d.status, undefined);
+      }
       break;
     }
     case 'communication_start': {
@@ -136,12 +163,18 @@ function surfaceToasts(env: EventEnvelope) {
   const push = useToastStore.getState().push;
   switch (env.type) {
     case 'host_status_change': {
-      const d = env.data as { host_id: string; status: HostStatus };
+      const d = env.data as {
+        host_id: string;
+        status: HostStatus;
+        project_id?: string | null;
+      };
       if (d.status === 'offline') {
         push({
           kind: 'warning',
           title: `${d.host_id} went offline`,
-          message: 'No heartbeat received for 15+ seconds.',
+          message: d.project_id
+            ? `Project ${shortId(d.project_id)}: no heartbeat for 15+ s`
+            : 'No heartbeat received for 15+ seconds.',
         });
       }
       break;
@@ -160,4 +193,8 @@ function surfaceToasts(env: EventEnvelope) {
     default:
       break;
   }
+}
+
+function shortId(id: string): string {
+  return id.replace(/-/g, '').slice(0, 8);
 }

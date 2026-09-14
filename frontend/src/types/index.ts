@@ -129,3 +129,23 @@ export interface NodePosition {
   position_x: number;
   position_y: number;
 }
+
+// ─── Per-project hosts (Phase 05) ───────────────────────────────────────
+
+export interface ProjectHostListResponse {
+  hosts: ProjectHost[];
+  total: number;
+  online: number;
+  offline: number;
+}
+
+/** Parsed snapshot of a host's Prometheus /metrics endpoint. */
+export interface HostMetricsSnapshot {
+  cpu_percent: number | null;
+  memory_percent: number | null;
+  network_rx_bytes: number | null;
+  network_tx_bytes: number | null;
+  uptime_seconds: number | null;
+  fetched_at: number;
+  error?: string;
+}

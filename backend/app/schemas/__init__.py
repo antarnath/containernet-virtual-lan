@@ -10,6 +10,7 @@ from .project import (
     ProjectCreateIn,
     ProjectDetailOut,
     ProjectEdgeOut,
+    ProjectHostListResponse,
     ProjectHostOut,
     ProjectListResponse,
     ProjectOut,
@@ -20,5 +21,6 @@ __all__ = [
     "HeartbeatIn", "HeartbeatOut",
     "CommunicationCreate", "CommunicationListResponse", "CommunicationOut",
     "NodePositionIn", "ProjectCreateIn", "ProjectDetailOut",
-    "ProjectEdgeOut", "ProjectHostOut", "ProjectListResponse", "ProjectOut",
+    "ProjectEdgeOut", "ProjectHostListResponse", "ProjectHostOut",
+    "ProjectListResponse", "ProjectOut",
 ]

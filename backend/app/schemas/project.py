@@ -59,6 +59,14 @@ class ProjectHostOut(BaseModel):
         from_attributes = True
 
 
+class ProjectHostListResponse(BaseModel):
+    """Response shape for ``GET /api/projects/{project_id}/hosts``."""
+    hosts: list[ProjectHostOut]
+    total: int
+    online: int
+    offline: int
+
+
 class ProjectEdgeOut(BaseModel):
     id: str
     source_host_id: str

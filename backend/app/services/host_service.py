@@ -190,6 +190,29 @@ async def list_project_hosts(session: AsyncSession, project_id: str) -> list[Pro
     return list(result.scalars())
 
 
+async def get_project_host(
+    session: AsyncSession, project_id: str, host_id: str
+) -> ProjectHost | None:
+    """Fetch a single ProjectHost by (project_id, host_id). None if not found."""
+    result = await session.execute(
+        select(ProjectHost).where(
+            ProjectHost.project_id == project_id,
+            ProjectHost.host_id == host_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_all_projects_hosts(session: AsyncSession) -> list[ProjectHost]:
+    """Flat list of every ProjectHost across every project. Used by the legacy
+    dashboard during the transition. Returns the rows ordered by
+    (project_id, host_id) for stable pagination."""
+    result = await session.execute(
+        select(ProjectHost).order_by(ProjectHost.project_id, ProjectHost.host_id)
+    )
+    return list(result.scalars())
+
+
 async def get_topology(session: AsyncSession) -> dict:
     """Legacy: build the static 3-node topology from global hosts."""
     hosts = await list_hosts(session)
