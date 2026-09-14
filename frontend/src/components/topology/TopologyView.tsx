@@ -13,7 +13,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import { useHostStore } from '../../store/hostStore';
-import { useRealtimeStore } from '../../store/realtimeStore';
+import { useInFlight } from '../../store/realtimeStore';
 import { buildLayout } from '../../utils/layout';
 import HostNode from './HostNode';
 
@@ -21,7 +21,10 @@ const nodeTypes = { host: HostNode };
 
 export default function TopologyView() {
   const topology = useHostStore((s) => s.topology);
-  const inFlight = useRealtimeStore((s) => s.inFlight);
+  // Phase 07 — legacy global view. No project context, so we read the
+  // union of every project's in-flight comms via the helper hook. New
+  // project-aware TopologyCanvas uses the per-project slice instead.
+  const inFlight = useInFlight();
 
   const { nodes, edges } = useMemo<
     { nodes: Node[]; edges: Edge[] }

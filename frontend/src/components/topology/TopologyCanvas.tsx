@@ -9,7 +9,9 @@
 //     coordinates — handled by projectStore.setNodePosition.
 //
 // We keep the real-time in-flight edge highlighting from before via
-// useRealtimeStore.inFlight — same as the global TopologyView.
+// useRealtimeStore.inFlightByProject[project.id] — scoped to this project
+// so comms from a different project can't light up edges here. The
+// legacy global TopologyView still uses the union across all projects.
 
 import { useCallback, useMemo } from 'react';
 import ReactFlow, {
@@ -30,6 +32,10 @@ import type { ProjectDetail } from '../../types';
 import HostNode from './HostNode';
 
 const nodeTypes = { host: HostNode };
+
+// Stable empty array so `useRealtimeStore` returns the same reference when
+// no comms are in flight for this project — avoids spurious re-renders.
+const EMPTY: never[] = [];
 
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 90;
@@ -58,7 +64,13 @@ function autoLayout(
 
 export default function TopologyCanvas({ project }: { project: ProjectDetail }) {
   const setNodePosition = useProjectStore((s) => s.setNodePosition);
-  const inFlight = useRealtimeStore((s) => s.inFlight);
+  // Phase 07 — only light up edges for comms inside THIS project. The
+  // realtime store buckets in-flight comms by project_id, so we read the
+  // slice that belongs to the project we're rendering (the helper also
+  // subscribes us to the map so the selector re-fires on changes).
+  const inFlight = useRealtimeStore((s) =>
+    s.inFlightByProject[project.id] ?? EMPTY,
+  );
   const pushToast = useToastStore((s) => s.push);
 
   // Build {nodes, edges} for React Flow. Positions come from the DB; only

@@ -43,7 +43,7 @@ from app.models import (
 )
 from app.schemas.communication import CommunicationCreateIn
 from app.services import host_service
-from app.ws import publish
+from app.ws import publish_to_project
 
 AGENT_SEND_TIMEOUT = 5.0  # seconds
 
@@ -194,12 +194,13 @@ async def trigger_communication(
     await session.commit()
     await session.refresh(comm)
 
-    # 5. Emit "start" event with project_id so the frontend can route it.
-    publish(
+    # 5. Emit "start" event scoped to the project — the frontend hook only
+    # receives this if its socket is subscribed to the same project_id.
+    publish_to_project(
+        str(comm.project_id),
         "communication_start",
         {
             "id": comm.id,
-            "project_id": str(comm.project_id),
             "source_host_id": comm.source_host_id,
             "dest_host_id": comm.dest_host_id,
             "protocol": comm.protocol,
@@ -269,7 +270,8 @@ async def trigger_communication(
             f"{data.destination_host_id} delivered in {comm.latency_ms}ms"
         )
 
-    # 8. Emit "complete" event with project_id.
-    publish("communication_complete", _serialize(comm))
+    # 8. Emit "complete" event scoped to the project — only subscribers
+    # of this project_id receive the final latency / status update.
+    publish_to_project(str(comm.project_id), "communication_complete", _serialize(comm))
 
     return comm

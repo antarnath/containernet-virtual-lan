@@ -23,7 +23,7 @@ from app.models import (
     ProjectHostStatus,
 )
 from app.schemas.heartbeat import HeartbeatIn
-from app.ws import publish
+from app.ws import publish, publish_to_project
 
 
 ONLINE_THRESHOLD = timedelta(seconds=15)
@@ -64,8 +64,7 @@ async def _upsert_project_heartbeat(
 
     new_status = _status_str(row.status)
     if previous_status != new_status:
-        publish("host_status_change", {
-            "project_id": hb.project_id,
+        publish_to_project(str(row.project_id), "host_status_change", {
             "host_id": row.host_id,
             "status": new_status,
         })
@@ -161,8 +160,7 @@ async def sweep_offline_hosts(session: AsyncSession) -> int:
         if row.last_seen is None or row.last_seen < cutoff:
             row.status = ProjectHostStatus.OFFLINE
             count += 1
-            publish("host_status_change", {
-                "project_id": row.project_id,
+            publish_to_project(str(row.project_id), "host_status_change", {
                 "host_id": row.host_id,
                 "status": "offline",
             })

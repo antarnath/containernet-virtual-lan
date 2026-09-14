@@ -10,6 +10,10 @@
 //   * The nested section now also has a Communications link (scoped to
 //     the active project).
 //
+// Phase 07:
+//   * No UI changes here — the per-project WS subscriptions happen below
+//     the navigation layer, in useWebSocket + the realtime store.
+//
 // Each nested link is enabled ONLY when a project is currently loaded.
 // Global links (Dashboard, Projects, LAN Builder, Comms legacy, Hosts
 // legacy) stay always-visible.
@@ -124,7 +128,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="px-5 py-3 border-t border-border text-[10px] text-muted">
-        v0.8.0 · Phase 07 (in progress)
+        v0.10.0 · Phase 08 (in progress)
       </div>
     </aside>
   );
