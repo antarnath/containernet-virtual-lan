@@ -1,60 +1,169 @@
-// Global store for communications history + trigger action.
+// Per-project communications store (Phase 06).
+//
+// Like hostStore, this is keyed by project_id so the UI naturally isolates
+// one project's log from another. The legacy flat list lives behind
+// `legacy.comms` for the (now-deprecated) global page.
 
 import { create } from 'zustand';
-import { CommunicationsAPI } from '../api/client';
+import { CommunicationsAPI, ProjectsAPI } from '../api/client';
 import type { Communication, CommunicationCreate } from '../types';
 
-interface CommState {
+interface ProjectCommBundle {
   communications: Communication[];
   loading: boolean;
   error: string | null;
-
-  fetchComms: () => Promise<void>;
-  trigger: (body: CommunicationCreate) => Promise<Communication | null>;
-  upsertCommunication: (comm: Communication) => void;
 }
 
-export const useCommStore = create<CommState>((set, get) => ({
+interface CommState {
+  /** Indexed by project_id. */
+  byProject: Record<string, ProjectCommBundle>;
+  /** Legacy flat list (no project scope). Used only by the legacy page. */
+  legacy: {
+    communications: Communication[];
+    loading: boolean;
+    error: string | null;
+  };
+
+  /** Load (or refresh) communications for a single project. */
+  fetchForProject: (projectId: string, limit?: number) => Promise<void>;
+  /** Trigger a new communication scoped to a project. */
+  trigger: (
+    projectId: string,
+    body: CommunicationCreate,
+  ) => Promise<Communication | null>;
+  /** WebSocket event hook — applies an incoming comm to the right bucket. */
+  upsertCommunication: (comm: Communication) => void;
+
+  /** Legacy global fetch (used by the legacy page only). */
+  fetchLegacy: () => Promise<void>;
+}
+
+const emptyBundle = (): ProjectCommBundle => ({
   communications: [],
   loading: false,
   error: null,
+});
 
-  fetchComms: async () => {
+export const useCommStore = create<CommState>((set, get) => ({
+  byProject: {},
+  legacy: { communications: [], loading: false, error: null },
+
+  fetchForProject: async (projectId, limit = 100) => {
+    const current = get().byProject[projectId] ?? emptyBundle();
+    set({
+      byProject: {
+        ...get().byProject,
+        [projectId]: { ...current, loading: true, error: null },
+      },
+    });
     try {
-      const data = await CommunicationsAPI.list();
-      set({ communications: data.communications, error: null });
+      const data = await ProjectsAPI.communications.list(projectId, limit);
+      set({
+        byProject: {
+          ...get().byProject,
+          [projectId]: {
+            communications: data.communications,
+            loading: false,
+            error: null,
+          },
+        },
+      });
     } catch (e) {
-      set({ error: (e as Error).message });
+      set({
+        byProject: {
+          ...get().byProject,
+          [projectId]: {
+            ...(get().byProject[projectId] ?? emptyBundle()),
+            loading: false,
+            error: (e as Error).message,
+          },
+        },
+      });
     }
   },
 
-  trigger: async (body) => {
-    set({ loading: true });
+  trigger: async (projectId, body) => {
+    const current = get().byProject[projectId] ?? emptyBundle();
+    set({
+      byProject: {
+        ...get().byProject,
+        [projectId]: { ...current, loading: true, error: null },
+      },
+    });
     try {
-      const comm = await CommunicationsAPI.trigger(body);
-      // Optimistically prepend to the list, then refresh from server.
-      set({ communications: [comm, ...get().communications], loading: false });
-      // Re-fetch shortly after so the orchestrator's final latency/status is reflected.
-      setTimeout(() => get().fetchComms(), 500);
+      const comm = await ProjectsAPI.communications.trigger(projectId, body);
+      const updated = current.communications;
+      set({
+        byProject: {
+          ...get().byProject,
+          [projectId]: {
+            communications: [comm, ...updated],
+            loading: false,
+            error: null,
+          },
+        },
+      });
+      // Re-fetch shortly after so the orchestrator's final latency/status is
+      // reflected. The backend returns DELIVERED/FAILED a moment later.
+      setTimeout(() => {
+        void get().fetchForProject(projectId);
+      }, 500);
       return comm;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({
+        byProject: {
+          ...get().byProject,
+          [projectId]: { ...current, loading: false, error: (e as Error).message },
+        },
+      });
       return null;
     }
   },
 
-  // Used by the WebSocket hook when a "communication_complete" event arrives.
-  // If the comm already exists, replace it (status went from pending ->
-  // delivered/failed). Otherwise prepend it.
   upsertCommunication: (comm) => {
-    const existing = get().communications;
-    const idx = existing.findIndex((c) => c.id === comm.id);
-    if (idx === -1) {
-      set({ communications: [comm, ...existing] });
-    } else {
-      const copy = [...existing];
-      copy[idx] = comm;
-      set({ communications: copy });
+    const projectId = comm.project_id ?? '';
+    if (!projectId) {
+      // Fall back to the legacy bucket.
+      const legacy = get().legacy.communications;
+      const idx = legacy.findIndex((c) => c.id === comm.id);
+      if (idx === -1) {
+        set({ legacy: { ...get().legacy, communications: [comm, ...legacy] } });
+      } else {
+        const copy = [...legacy];
+        copy[idx] = comm;
+        set({ legacy: { ...get().legacy, communications: copy } });
+      }
+      return;
+    }
+    const bucket = get().byProject[projectId] ?? emptyBundle();
+    const idx = bucket.communications.findIndex((c) => c.id === comm.id);
+    const nextList =
+      idx === -1
+        ? [comm, ...bucket.communications]
+        : bucket.communications.map((c) => (c.id === comm.id ? comm : c));
+    set({
+      byProject: {
+        ...get().byProject,
+        [projectId]: { ...bucket, communications: nextList },
+      },
+    });
+  },
+
+  fetchLegacy: async () => {
+    set({ legacy: { ...get().legacy, loading: true, error: null } });
+    try {
+      const data = await CommunicationsAPI.list();
+      set({
+        legacy: { communications: data.communications, loading: false, error: null },
+      });
+    } catch (e) {
+      set({
+        legacy: {
+          ...get().legacy,
+          loading: false,
+          error: (e as Error).message,
+        },
+      });
     }
   },
 }));

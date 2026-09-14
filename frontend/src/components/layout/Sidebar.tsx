@@ -5,10 +5,14 @@
 //     into `useProjectStore.current`, jumping to /projects routes auto-
 //     picks that project.
 //   * A nested section under the active project: Topology + Hosts links.
-//     (Communications + Log land in Phase 06.)
-//   * Each nested link is enabled ONLY when a project is currently loaded.
-//   * Global links (Dashboard, Projects, LAN Builder, Comms) stay
-//     always-visible.
+//
+// Phase 06 additions:
+//   * The nested section now also has a Communications link (scoped to
+//     the active project).
+//
+// Each nested link is enabled ONLY when a project is currently loaded.
+// Global links (Dashboard, Projects, LAN Builder, Comms legacy, Hosts
+// legacy) stay always-visible.
 
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useProjectStore } from '../../store/projectStore';
@@ -94,7 +98,7 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
-        {/* Per-project nested section (Phase 05) */}
+        {/* Per-project nested section (Phase 05/06) */}
         {current && (
           <div className="pt-4 mt-2 border-t border-border">
             <div className="text-[10px] uppercase tracking-wider text-muted px-3 mb-1">
@@ -110,15 +114,17 @@ export default function Sidebar() {
               label="Hosts"
               icon="🖥️"
             />
-            {/* Future: */}
-            {/* <NestedLink .../messages /> */}
-            {/* <NestedLink .../log /> */}
+            <NestedLink
+              to={`/projects/${current.id}/communications`}
+              label="Communications"
+              icon="💬"
+            />
           </div>
         )}
       </nav>
 
       <div className="px-5 py-3 border-t border-border text-[10px] text-muted">
-        v0.5.0 · Phase 05
+        v0.8.0 · Phase 07 (in progress)
       </div>
     </aside>
   );

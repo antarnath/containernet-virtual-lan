@@ -39,12 +39,9 @@ export const TopologyAPI = {
 };
 
 export const CommunicationsAPI = {
+  /** Legacy flat list across every project. Deprecated — use ProjectsAPI.communications.list. */
   list: async (): Promise<CommunicationListResponse> => {
     const { data } = await api.get<CommunicationListResponse>('/communications');
-    return data;
-  },
-  trigger: async (body: CommunicationCreate): Promise<Communication> => {
-    const { data } = await api.post<Communication>('/communications', body);
     return data;
   },
 };
@@ -108,6 +105,38 @@ export const ProjectsAPI = {
       const { data } = await api.get<string>(
         `/projects/${projectId}/hosts/${hostId}/metrics`,
         { responseType: 'text', transformResponse: [(d) => d] },
+      );
+      return data;
+    },
+  },
+  // ─── per-project communications (Phase 06) ────────────────────────────
+  communications: {
+    list: async (
+      projectId: string,
+      limit = 100,
+    ): Promise<CommunicationListResponse> => {
+      const { data } = await api.get<CommunicationListResponse>(
+        `/projects/${projectId}/communications`,
+        { params: { limit } },
+      );
+      return data;
+    },
+    get: async (
+      projectId: string,
+      commId: string,
+    ): Promise<Communication> => {
+      const { data } = await api.get<Communication>(
+        `/projects/${projectId}/communications/${commId}`,
+      );
+      return data;
+    },
+    trigger: async (
+      projectId: string,
+      body: CommunicationCreate,
+    ): Promise<Communication> => {
+      const { data } = await api.post<Communication>(
+        `/projects/${projectId}/communications`,
+        body,
       );
       return data;
     },

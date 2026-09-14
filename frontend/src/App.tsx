@@ -9,6 +9,9 @@
 // Phase 05 adds per-project hosts:
 //   /projects/:projectId/hosts     — hosts list + live metrics for one project
 //
+// Phase 06 adds per-project communications:
+//   /projects/:projectId/communications — trigger panel + log for one project
+//
 // Legacy global routes (/topology, /hosts, /communications) are kept for
 // now — they still work against the static ContainerNet while we
 // transition. They'll be removed in Phase 09 polish.
@@ -37,6 +40,10 @@ export default function App() {
           <Route
             path="/projects/:projectId/hosts"
             element={<HostsPage />}
+          />
+          <Route
+            path="/projects/:projectId/communications"
+            element={<CommunicationsPage />}
           />
           {/* Legacy global routes — kept during transition. */}
           <Route path="/topology" element={<TopologyPage />} />

@@ -42,6 +42,7 @@ export type CommStatus = 'pending' | 'delivered' | 'failed';
 
 export interface Communication {
   id: string;
+  project_id: string | null;
   source_host_id: string;
   dest_host_id: string;
   protocol: string;
@@ -57,6 +58,7 @@ export interface CommunicationCreate {
   destination_host_id: string;
   protocol: string;
   payload: string;
+  project_id?: string | null;
 }
 
 export interface CommunicationListResponse {

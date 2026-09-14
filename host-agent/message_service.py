@@ -40,6 +40,7 @@ async def handle_send(request: web.Request) -> web.Response:
     target_ip = body.get("target_ip")
     target_host_id = body.get("target_host_id")
     comm_id = body.get("comm_id", "")
+    project_id = body.get("project_id", "")
     payload = body.get("payload", "")
     protocol = body.get("protocol", "HTTP")
 
@@ -52,6 +53,7 @@ async def handle_send(request: web.Request) -> web.Response:
     _record(
         "outgoing",
         comm_id=comm_id,
+        project_id=project_id,
         target=target_host_id,
         target_ip=target_ip,
         payload=payload,
@@ -62,6 +64,7 @@ async def handle_send(request: web.Request) -> web.Response:
     url = f"http://{target_ip}:8080/receive"
     out_body = {
         "comm_id": comm_id,
+        "project_id": project_id,
         "from_host_id": config.HOST_ID,
         "from_ip": config.HOST_IP,
         "payload": payload,
@@ -92,6 +95,7 @@ async def handle_receive(request: web.Request) -> web.Response:
     _record(
         "incoming",
         comm_id=body.get("comm_id", ""),
+        project_id=body.get("project_id", ""),
         from_host_id=body.get("from_host_id", ""),
         from_ip=body.get("from_ip", ""),
         payload=body.get("payload", ""),

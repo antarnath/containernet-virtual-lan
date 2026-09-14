@@ -132,20 +132,50 @@ function handleEvent(
     case 'communication_start': {
       const d = env.data as {
         id: string;
+        project_id?: string | null;
         source_host_id: string;
         dest_host_id: string;
       };
-      markInFlight({
-        id: d.id,
-        source: d.source_host_id,
-        target: d.dest_host_id,
-        startedAt: Date.now(),
-      });
+      // Phase 06 — events carry project_id. Only surface the in-flight
+      // indicator if the event is for the project the user is currently
+      // viewing (or if there's no project context — legacy/global view).
+      const current = useProjectStore.getState().current;
+      const targetProjectId = d.project_id ?? (current ? current.id : null);
+      if (targetProjectId) {
+        if (!current || current.id === targetProjectId) {
+          markInFlight({
+            id: d.id,
+            source: d.source_host_id,
+            target: d.dest_host_id,
+            startedAt: Date.now(),
+          });
+        }
+      } else {
+        markInFlight({
+          id: d.id,
+          source: d.source_host_id,
+          target: d.dest_host_id,
+          startedAt: Date.now(),
+        });
+      }
       break;
     }
     case 'communication_complete': {
       const d = env.data as Communication & { timestamp: string };
-      clearInFlight(d.id);
+      // Phase 06 — comm events carry project_id. The store's
+      // `upsertCommunication` writes the comm into the right per-project
+      // bucket automatically, so we don't filter here (legacy/global users
+      // still get a copy). We DO filter the in-flight indicator so a
+      // completed cross-project message doesn't clear our own.
+      const current = useProjectStore.getState().current;
+      const targetProjectId = d.project_id ?? (current ? current.id : null);
+      if (
+        !targetProjectId ||
+        !current ||
+        current.id === targetProjectId
+      ) {
+        clearInFlight(d.id);
+      }
       useCommStore.getState().upsertCommunication(d);
       break;
     }

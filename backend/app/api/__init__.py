@@ -10,6 +10,9 @@ api_router.include_router(hosts.legacy_router, prefix="")
 api_router.include_router(hosts.project_router, prefix="")
 api_router.include_router(projects.router, prefix="")
 api_router.include_router(topology.router, prefix="")
-api_router.include_router(communications.router, prefix="")
+# `communications` exposes BOTH legacy /communications and per-project
+# /projects/{id}/communications.
+api_router.include_router(communications.legacy_router, prefix="")
+api_router.include_router(communications.project_router, prefix="")
 
 __all__ = ["api_router"]

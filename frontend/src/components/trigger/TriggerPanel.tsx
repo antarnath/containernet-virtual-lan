@@ -1,14 +1,25 @@
-// Trigger Panel — pick source/destination hosts + protocol + payload, click Send.
+// Trigger Panel (Phase 06) — pick source/destination hosts + protocol +
+// payload, click Send. Operates strictly inside the active project; it
+// reads hosts from `hostStore.byProject[currentProject.id]` and calls
+// `useCommStore.trigger(projectId, body)`.
 
 import { useEffect, useState } from 'react';
 import { useHostStore } from '../../store/hostStore';
 import { useCommStore } from '../../store/commStore';
+import { useProjectStore } from '../../store/projectStore';
 import ProtocolSelector from './ProtocolSelector';
 
 export default function TriggerPanel() {
-  const hosts = useHostStore((s) => s.hosts);
+  const currentProject = useProjectStore((s) => s.current);
+  const projectId = currentProject?.id ?? '';
+  const projectHosts = useHostStore((s) =>
+    projectId ? s.byProject[projectId] : null,
+  );
+
   const trigger = useCommStore((s) => s.trigger);
-  const loading = useCommStore((s) => s.loading);
+  const loading = useCommStore(
+    (s) => (projectId ? s.byProject[projectId]?.loading ?? false : false),
+  );
 
   const [source, setSource] = useState<string>('');
   const [destination, setDestination] = useState<string>('');
@@ -18,12 +29,13 @@ export default function TriggerPanel() {
 
   // Auto-select first two hosts when the host list first loads.
   useEffect(() => {
-    if (!hosts || hosts.hosts.length < 2) return;
-    if (!source) setSource(hosts.hosts[0].host_id);
-    if (!destination) setDestination(hosts.hosts[1].host_id);
-  }, [hosts, source, destination]);
+    if (!projectHosts || projectHosts.hosts.length < 2) return;
+    if (!source) setSource(projectHosts.hosts[0].host_id);
+    if (!destination) setDestination(projectHosts.hosts[1].host_id);
+  }, [projectHosts, source, destination]);
 
   const canSend =
+    !!projectId &&
     !loading &&
     !!source &&
     !!destination &&
@@ -31,28 +43,46 @@ export default function TriggerPanel() {
     payload.trim().length > 0;
 
   const onSend = async () => {
-    if (!canSend) return;
+    if (!canSend || !projectId) return;
     setLastResult('');
-    const comm = await trigger({
+    const comm = await trigger(projectId, {
       source_host_id: source,
       destination_host_id: destination,
       protocol,
       payload,
+      project_id: projectId,
     });
     if (comm) {
       setLastResult(
         `✓ ${comm.source_host_id} → ${comm.dest_host_id} ` +
-          `${comm.status} in ${comm.latency_ms?.toFixed(1) ?? '?'} ms`
+          `${comm.status} in ${comm.latency_ms?.toFixed(1) ?? '?'} ms`,
       );
     } else {
       setLastResult('✗ trigger failed (see browser console)');
     }
   };
 
-  if (!hosts || hosts.hosts.length === 0) {
+  if (!currentProject) {
     return (
       <div className="text-muted text-sm">
-        Waiting for hosts to register…
+        Select a project from the sidebar to send messages inside it.
+      </div>
+    );
+  }
+
+  if (!projectHosts || projectHosts.hosts.length === 0) {
+    return (
+      <div className="text-muted text-sm">
+        Waiting for hosts in <b>{currentProject.name}</b> to register…
+      </div>
+    );
+  }
+
+  if (projectHosts.hosts.length < 2) {
+    return (
+      <div className="text-muted text-sm">
+        <b>{currentProject.name}</b> only has one host. Add at least one
+        more to send messages between them.
       </div>
     );
   }
@@ -62,7 +92,8 @@ export default function TriggerPanel() {
       <div>
         <h2 className="text-lg font-semibold text-text">Trigger Panel</h2>
         <p className="text-xs text-muted mt-1">
-          Send a message from one host to another over the virtual LAN.
+          Send a message between two hosts in{' '}
+          <span className="text-accent">{currentProject.name}</span>.
         </p>
       </div>
 
@@ -73,7 +104,7 @@ export default function TriggerPanel() {
             onChange={(e) => setSource(e.target.value)}
             className="w-full bg-panel2 border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
           >
-            {hosts.hosts.map((h) => (
+            {projectHosts.hosts.map((h) => (
               <option key={h.host_id} value={h.host_id}>
                 {h.hostname} ({h.host_id})
               </option>
@@ -87,7 +118,7 @@ export default function TriggerPanel() {
             onChange={(e) => setDestination(e.target.value)}
             className="w-full bg-panel2 border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
           >
-            {hosts.hosts.map((h) => (
+            {projectHosts.hosts.map((h) => (
               <option key={h.host_id} value={h.host_id}>
                 {h.hostname} ({h.host_id})
               </option>

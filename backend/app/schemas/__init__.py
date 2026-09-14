@@ -1,7 +1,7 @@
 from .host import HostListResponse, HostOut
 from .heartbeat import HeartbeatIn, HeartbeatOut
 from .communication import (
-    CommunicationCreate,
+    CommunicationCreateIn,
     CommunicationListResponse,
     CommunicationOut,
 )
@@ -19,7 +19,7 @@ from .project import (
 __all__ = [
     "HostListResponse", "HostOut",
     "HeartbeatIn", "HeartbeatOut",
-    "CommunicationCreate", "CommunicationListResponse", "CommunicationOut",
+    "CommunicationCreateIn", "CommunicationListResponse", "CommunicationOut",
     "NodePositionIn", "ProjectCreateIn", "ProjectDetailOut",
     "ProjectEdgeOut", "ProjectHostListResponse", "ProjectHostOut",
     "ProjectListResponse", "ProjectOut",
