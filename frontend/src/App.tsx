@@ -12,6 +12,9 @@
 // Phase 06 adds per-project communications:
 //   /projects/:projectId/communications — trigger panel + log for one project
 //
+// Phase 08 adds per-project message consoles:
+//   /projects/:projectId/messages  — one console per host, streams in real time
+//
 // Legacy global routes (/topology, /hosts, /communications) are kept for
 // now — they still work against the static ContainerNet while we
 // transition. They'll be removed in Phase 09 polish.
@@ -22,6 +25,7 @@ import Dashboard from './pages/Dashboard';
 import TopologyPage from './pages/TopologyPage';
 import HostsPage from './pages/HostsPage';
 import CommunicationsPage from './pages/CommunicationsPage';
+import MessagesPage from './pages/MessagesPage';
 import LANBuilderPage from './pages/LANBuilderPage';
 import ProjectsPage from './pages/ProjectsPage';
 
@@ -44,6 +48,10 @@ export default function App() {
           <Route
             path="/projects/:projectId/communications"
             element={<CommunicationsPage />}
+          />
+          <Route
+            path="/projects/:projectId/messages"
+            element={<MessagesPage />}
           />
           {/* Legacy global routes — kept during transition. */}
           <Route path="/topology" element={<TopologyPage />} />

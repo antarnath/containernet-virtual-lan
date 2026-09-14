@@ -37,10 +37,24 @@ You'll land on the **LAN Builder**. Pick a topology, name your project, choose h
 | File | Purpose |
 |------|---------|
 | **[overview.md](overview.md)** | Full project specification (architecture, data flows, schema, API, 5 topology templates) |
-| **[phases/README.md](phases/README.md)** | Build roadmap — 10 phases, each delivering a complete milestone |
+| **[phases/README.md](phases/README.md)** | Build roadmap — 9 phases; the dynamic MVP is feature-complete |
 | **[phases/phase_00..09_*.md](phases/)** | Step-by-step guides for every phase |
+| **Swagger UI** | `http://localhost:8000/docs` — every REST endpoint annotated |
+| **WebSocket** | `/ws` — per-project event stream (subscribe envelope, message events) |
 
 Start with `overview.md` for the big picture, then follow the phases in order.
+
+## 🧩 What's Inside
+
+The platform ships with these user-facing surfaces:
+
+- **Dashboard** (`/`) — platform-wide totals + recent-activity feed (Phase 09)
+- **LAN Builder** (`/builder`) — pick topology, host count, subnet (Phase 04)
+- **Projects** (`/projects`) — grid of all projects with Start / Stop / Delete (Phase 04, polished Phase 09)
+- **Per-project Topology** (`/projects/:id/topology`) — interactive React Flow view with drag-persist (Phase 04)
+- **Per-project Hosts** (`/projects/:id/hosts`) — status LEDs + live metrics (Phase 05)
+- **Per-project Communications** (`/projects/:id/communications`) — Node-RED-style trigger + log (Phase 06)
+- **Per-project Messages** (`/projects/:id/messages`) — one console per host, real-time bubbles (Phase 08)
 
 ---
 

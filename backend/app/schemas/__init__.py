@@ -5,6 +5,7 @@ from .communication import (
     CommunicationListResponse,
     CommunicationOut,
 )
+from .message import MessageIn, MessageListResponse, MessageOut
 from .project import (
     NodePositionIn,
     ProjectCreateIn,
@@ -20,6 +21,7 @@ __all__ = [
     "HostListResponse", "HostOut",
     "HeartbeatIn", "HeartbeatOut",
     "CommunicationCreateIn", "CommunicationListResponse", "CommunicationOut",
+    "MessageIn", "MessageListResponse", "MessageOut",
     "NodePositionIn", "ProjectCreateIn", "ProjectDetailOut",
     "ProjectEdgeOut", "ProjectHostListResponse", "ProjectHostOut",
     "ProjectListResponse", "ProjectOut",

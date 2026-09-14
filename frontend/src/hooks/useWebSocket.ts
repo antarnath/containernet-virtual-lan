@@ -12,14 +12,18 @@
 //   * `markInFlight` now requires `project_id` so the store can bucket
 //     in-flight comms per project (so TopologyCanvas only lights up
 //     edges that belong to the project it is rendering).
+//
+// Phase 08 — host-agent "message" events are appended to the message
+// store's per-host bucket for the project the browser is subscribed to.
 
 import { useEffect, useRef } from 'react';
 import { useRealtimeStore } from '../store/realtimeStore';
 import { useHostStore } from '../store/hostStore';
 import { useCommStore } from '../store/commStore';
+import { useMessageStore } from '../store/messageStore';
 import { useProjectStore } from '../store/projectStore';
 import { useToastStore } from '../store/toastStore';
-import type { Communication, HostStatus } from '../types';
+import type { Communication, HostStatus, MessageRecord } from '../types';
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 
@@ -267,6 +271,16 @@ function handleEvent(
         clearInFlight(d.id);
       }
       useCommStore.getState().upsertCommunication(d);
+      break;
+    }
+    case 'message': {
+      // Phase 08 — per-host message console. The server already filters
+      // by project_id (we only receive events for our subscription), but
+      // we double-check the field is present so a malformed envelope
+      // doesn't pollute the global flat store.
+      const d = env.data as MessageRecord;
+      if (!d || !d.project_id || !d.host_id) break;
+      useMessageStore.getState().addMessage(d);
       break;
     }
     case 'subscribed':

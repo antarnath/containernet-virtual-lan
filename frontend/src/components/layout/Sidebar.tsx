@@ -14,10 +14,15 @@
 //   * No UI changes here — the per-project WS subscriptions happen below
 //     the navigation layer, in useWebSocket + the realtime store.
 //
+// Phase 08:
+//   * Added the per-project "Messages" link — routes to the per-host
+//     message consoles page that streams message bubbles in real time.
+//
 // Each nested link is enabled ONLY when a project is currently loaded.
 // Global links (Dashboard, Projects, LAN Builder, Comms legacy, Hosts
 // legacy) stay always-visible.
 
+import { useEffect } from 'react';
 import { useNavigate, NavLink } from 'react-router-dom';
 import { useProjectStore } from '../../store/projectStore';
 
@@ -39,16 +44,19 @@ const globalLinks: LinkSpec[] = [
 export default function Sidebar() {
   const current = useProjectStore((s) => s.current);
   const projects = useProjectStore((s) => s.projects);
+  const projectsLoading = useProjectStore((s) => s.projectsLoading);
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
   const navigate = useNavigate();
 
-  // Make sure the project list is hydrated for the dropdown, regardless of
-  // which page is currently active.
-  // (Cheap to call: the store memoizes; harmless if already loaded.)
-  if (projects.length === 0) {
-    // Schedule the fetch once; don't block render.
-    setTimeout(() => fetchProjects(), 0);
-  }
+  // Hydrate the project list once (cheap; the store memoizes the result).
+  // Guard with projectsLoading so we don't kick off a duplicate fetch while
+  // the first one is in-flight — the old `setTimeout(...)` pattern could
+  // re-fire on every render and caused the empty-state flicker.
+  useEffect(() => {
+    if (projects.length === 0 && !projectsLoading) {
+      void fetchProjects();
+    }
+  }, [projects.length, projectsLoading, fetchProjects]);
 
   return (
     <aside className="w-60 bg-panel border-r border-border flex flex-col">
@@ -102,7 +110,7 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
-        {/* Per-project nested section (Phase 05/06) */}
+        {/* Per-project nested section (Phase 05/06/08) */}
         {current && (
           <div className="pt-4 mt-2 border-t border-border">
             <div className="text-[10px] uppercase tracking-wider text-muted px-3 mb-1">
@@ -123,12 +131,17 @@ export default function Sidebar() {
               label="Communications"
               icon="💬"
             />
+            <NestedLink
+              to={`/projects/${current.id}/messages`}
+              label="Messages"
+              icon="📨"
+            />
           </div>
         )}
       </nav>
 
       <div className="px-5 py-3 border-t border-border text-[10px] text-muted">
-        v0.10.0 · Phase 08 (in progress)
+        v0.10.0 · Phase 09 (in progress)
       </div>
     </aside>
   );

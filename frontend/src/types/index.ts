@@ -151,3 +151,51 @@ export interface HostMetricsSnapshot {
   fetched_at: number;
   error?: string;
 }
+
+// ─── Per-host messages (Phase 08) ───────────────────────────────────────
+
+export type MessageDirection = 'in' | 'out';
+
+export interface MessageRecord {
+  id: number;
+  project_id: string;
+  host_id: string;
+  direction: MessageDirection;
+  peer_host_id: string | null;
+  comm_id: string | null;
+  payload: string;
+  protocol: string;
+  timestamp: string;
+}
+
+export interface MessageListResponse {
+  messages: MessageRecord[];
+  total: number;
+}
+
+// ─── Platform stats (Phase 09) ────────────────────────────────────────────
+
+export interface StatsSummary {
+  projects: {
+    total: number;
+    running: number;
+    stopped: number;
+    other: number;
+  };
+  hosts: {
+    total: number;
+    online: number;
+    offline: number;
+  };
+  recent_communications: Array<{
+    id: string;
+    project_id: string | null;
+    source_host_id: string;
+    dest_host_id: string;
+    protocol: string;
+    payload: string;
+    status: string;
+    latency_ms: number | null;
+    timestamp: string | null;
+  }>;
+}

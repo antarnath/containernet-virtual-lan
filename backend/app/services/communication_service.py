@@ -137,6 +137,14 @@ async def list_all_communications(
     return list(result.scalars())
 
 
+async def list_recent_communications(
+    session: AsyncSession, limit: int = 20
+) -> list[Communication]:
+    """Phase 09 — most-recent comms across every project. Used by the
+    dashboard's "Recent Activity" feed."""
+    return await list_all_communications(session, limit=limit)
+
+
 # ─── trigger ────────────────────────────────────────────────────────────────
 
 async def trigger_communication(

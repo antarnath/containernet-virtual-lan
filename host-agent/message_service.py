@@ -1,10 +1,16 @@
-"""Host Agent message service (Phase 05).
+"""Host Agent message service (Phase 05 + Phase 08).
 
 Real HTTP endpoints on :8080:
   POST /send     - The backend calls this to ask us to deliver a message.
                    We then POST to the destination's /receive endpoint.
   POST /receive  - Called by another host agent. We log and ack.
   GET  /messages - Returns the last 50 messages we sent/received (debug).
+
+Phase 08 addition:
+  After every send/receive we ALSO fire a copy to the backend via
+  ``message_reporter`` so the per-host message console on the frontend
+  can stream the bubble in real time. Reporting failures never break the
+  local send/receive.
 """
 
 import asyncio
@@ -16,6 +22,7 @@ import aiohttp
 from aiohttp import web
 
 from config import config
+from message_reporter import fire_and_forget as _report
 
 # Local ring buffer of messages seen by this host (max 50).
 _message_log: deque = deque(maxlen=50)
@@ -60,6 +67,16 @@ async def handle_send(request: web.Request) -> web.Response:
         protocol=protocol,
     )
 
+    # Phase 08 — fire a copy of this outgoing message to the backend so the
+    # frontend's per-host message console can stream it live.
+    _report(
+        "out",
+        comm_id=comm_id,
+        peer_host_id=target_host_id,
+        payload=payload,
+        protocol=protocol,
+    )
+
     # Open a NEW HTTP client and POST to the destination's /receive endpoint.
     url = f"http://{target_ip}:8080/receive"
     out_body = {
@@ -92,14 +109,27 @@ async def handle_send(request: web.Request) -> web.Response:
 async def handle_receive(request: web.Request) -> web.Response:
     """Called by another host agent. We log and ack."""
     body = await request.json()
+    incoming_payload = body.get("payload", "")
+    incoming_protocol = body.get("protocol", "HTTP")
+    incoming_comm_id = body.get("comm_id", "")
+    incoming_from = body.get("from_host_id", "")
     _record(
         "incoming",
-        comm_id=body.get("comm_id", ""),
+        comm_id=incoming_comm_id,
         project_id=body.get("project_id", ""),
-        from_host_id=body.get("from_host_id", ""),
+        from_host_id=incoming_from,
         from_ip=body.get("from_ip", ""),
-        payload=body.get("payload", ""),
-        protocol=body.get("protocol", "HTTP"),
+        payload=incoming_payload,
+        protocol=incoming_protocol,
+    )
+
+    # Phase 08 — same fire-and-forget report, this time with direction="in".
+    _report(
+        "in",
+        comm_id=incoming_comm_id,
+        peer_host_id=incoming_from,
+        payload=incoming_payload,
+        protocol=incoming_protocol,
     )
     return web.json_response({"status": "received", "host": config.HOST_NAME})
 

@@ -7,6 +7,7 @@ runs on backend startup.
 
 from app.models.host import Base, Host, HostStatus
 from app.models.communication import Communication, CommStatus
+from app.models.message import Message, MessageDirection
 from app.models.project import Project, ProjectStatus
 from app.models.project_host import ProjectHost, ProjectHostStatus
 from app.models.project_edge import ProjectEdge
@@ -15,6 +16,7 @@ __all__ = [
     "Base",
     "Host", "HostStatus",
     "Communication", "CommStatus",
+    "Message", "MessageDirection",
     "Project", "ProjectStatus",
     "ProjectHost", "ProjectHostStatus",
     "ProjectEdge",

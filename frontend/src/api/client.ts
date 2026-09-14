@@ -7,6 +7,8 @@ import type {
   CommunicationCreate,
   CommunicationListResponse,
   HostListResponse,
+  MessageListResponse,
+  MessageRecord,
   NodePosition,
   Project,
   ProjectCreate,
@@ -14,6 +16,7 @@ import type {
   ProjectHost,
   ProjectHostListResponse,
   ProjectListResponse,
+  StatsSummary,
   TopologyResponse,
 } from '../types';
 
@@ -140,6 +143,76 @@ export const ProjectsAPI = {
       );
       return data;
     },
+  },
+  // ─── per-project per-host messages (Phase 08) ────────────────────────
+  messages: {
+    list: async (
+      projectId: string,
+      hostId: string,
+      limit = 100,
+    ): Promise<MessageListResponse> => {
+      const { data } = await api.get<MessageListResponse>(
+        `/projects/${projectId}/hosts/${hostId}/messages`,
+        { params: { limit } },
+      );
+      return data;
+    },
+    listProject: async (
+      projectId: string,
+      limit = 500,
+    ): Promise<MessageListResponse> => {
+      const { data } = await api.get<MessageListResponse>(
+        `/projects/${projectId}/messages`,
+        { params: { limit } },
+      );
+      return data;
+    },
+    clearProject: async (
+      projectId: string,
+    ): Promise<{ project_id: string; removed: number }> => {
+      const { data } = await api.delete<{ project_id: string; removed: number }>(
+        `/projects/${projectId}/messages`,
+      );
+      return data;
+    },
+  },
+};
+
+export const MessagesAPI = {
+  // Convenience re-export — some components prefer to import MessagesAPI
+  // directly rather than reaching through ProjectsAPI.messages.
+  list: (projectId: string, hostId: string, limit = 100) =>
+    ProjectsAPI.messages.list(projectId, hostId, limit),
+  listProject: (projectId: string, limit = 500) =>
+    ProjectsAPI.messages.listProject(projectId, limit),
+  clearProject: (projectId: string) =>
+    ProjectsAPI.messages.clearProject(projectId),
+  ingest: async (
+    projectId: string,
+    hostId: string,
+    body: {
+      direction: 'in' | 'out';
+      comm_id?: string | null;
+      peer_host_id?: string | null;
+      payload: string;
+      protocol?: string;
+    },
+  ): Promise<MessageRecord> => {
+    const { data } = await api.post<MessageRecord>(
+      `/projects/${projectId}/hosts/${hostId}/messages`,
+      body,
+    );
+    return data;
+  },
+};
+
+export const StatsAPI = {
+  /** Phase 09 — platform-wide summary used by the Overview dashboard. */
+  summary: async (limitRecent = 20): Promise<StatsSummary> => {
+    const { data } = await api.get<StatsSummary>('/stats/summary', {
+      params: { limit_recent: limitRecent },
+    });
+    return data;
   },
 };
 

@@ -1,12 +1,21 @@
-// Projects home — grid of project cards. Each card shows status and lets
-// the user open / start / stop / delete.
+// Projects home — grid of project cards (Phase 09 polish).
+//
+// Each card has:
+//   * A topology-colored left border (mesh=blue, star=purple, ring=green,
+//     bus=yellow, tree=red).
+//   * Status badge + dot in the top-right corner.
+//   * Relative last-updated timestamp ("2 min ago").
+//   * Two-step delete confirmation (cascading warning that it also stops
+//     containers and tears down the bridge).
+//   * Start / Stop / Open / Delete actions.
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+
 import { useProjectStore } from '../store/projectStore';
 import { useToastStore } from '../store/toastStore';
 import { TopologyIcon } from '../utils/topologyIcons';
-import type { Project, ProjectStatus } from '../types';
+import type { Project, ProjectStatus, TopologyType } from '../types';
 
 const STATUS_COLOR: Record<ProjectStatus, string> = {
   draft: 'bg-muted/30 text-muted border-muted',
@@ -18,11 +27,30 @@ const STATUS_COLOR: Record<ProjectStatus, string> = {
 
 const STATUS_DOT: Record<ProjectStatus, string> = {
   draft: 'bg-muted',
-  running: 'bg-online',
+  running: 'bg-online animate-pulse',
   partial: 'bg-unknown',
   stopped: 'bg-muted',
   error: 'bg-offline',
 };
+
+const TOPOLOGY_BORDER: Record<TopologyType, string> = {
+  mesh: 'border-l-blue-500',
+  star: 'border-l-purple-500',
+  ring: 'border-l-green-500',
+  bus: 'border-l-yellow-500',
+  tree: 'border-l-red-500',
+};
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  if (Number.isNaN(then)) return '—';
+  const diffSec = Math.round((now - then) / 1000);
+  if (diffSec < 60) return `${diffSec}s ago`;
+  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`;
+  return `${Math.round(diffSec / 86400)}d ago`;
+}
 
 function ProjectCard({ project }: { project: Project }) {
   const navigate = useNavigate();
@@ -31,8 +59,14 @@ function ProjectCard({ project }: { project: Project }) {
   const deleteProject = useProjectStore((s) => s.deleteProject);
   const actionInFlight = useProjectStore((s) => s.actionInFlight);
   const pushToast = useToastStore((s) => s.push);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const isBusy = (kind: string) => actionInFlight === kind;
+  const isRunning = project.status === 'running' || project.status === 'partial';
+  const isStopped =
+    project.status === 'stopped' ||
+    project.status === 'draft' ||
+    project.status === 'error';
 
   async function handleStart(e: React.MouseEvent) {
     e.stopPropagation();
@@ -72,7 +106,10 @@ function ProjectCard({ project }: { project: Project }) {
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    if (!confirm(`Delete "${project.name}"? This stops all its containers and removes the bridge.`)) {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      // Auto-clear the pending confirmation after 4s of inactivity.
+      window.setTimeout(() => setConfirmDelete(false), 4000);
       return;
     }
     try {
@@ -88,16 +125,17 @@ function ProjectCard({ project }: { project: Project }) {
         title: 'Delete failed',
         message: (err as Error).message,
       });
+    } finally {
+      setConfirmDelete(false);
     }
   }
-
-  const isRunning = project.status === 'running' || project.status === 'partial';
-  const isStopped = project.status === 'stopped' || project.status === 'draft' || project.status === 'error';
 
   return (
     <div
       onClick={() => navigate(`/projects/${project.id}/topology`)}
-      className="bg-panel border border-border rounded-xl p-5 hover:border-accent transition-colors cursor-pointer group"
+      className={`relative bg-panel border border-border border-l-4 ${
+        TOPOLOGY_BORDER[project.topology_type]
+      } rounded-xl p-5 hover:border-accent hover:border-l-4 transition-colors cursor-pointer group`}
     >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
@@ -105,24 +143,34 @@ function ProjectCard({ project }: { project: Project }) {
             <TopologyIcon type={project.topology_type} className="w-7 h-7" />
           </div>
           <div>
-            <div className="font-semibold text-text truncate max-w-[180px]" title={project.name}>
+            <div
+              className="font-semibold text-text truncate max-w-[180px]"
+              title={project.name}
+            >
               {project.name}
             </div>
             <div className="text-xs text-muted capitalize">
-              {project.topology_type} · {project.host_count} host{project.host_count === 1 ? '' : 's'}
+              {project.topology_type} · {project.host_count} host
+              {project.host_count === 1 ? '' : 's'}
             </div>
           </div>
         </div>
         <span
           className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border ${STATUS_COLOR[project.status]}`}
         >
-          <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1 align-middle ${STATUS_DOT[project.status]}`}></span>
+          <span
+            className={`inline-block w-1.5 h-1.5 rounded-full mr-1 align-middle ${STATUS_DOT[project.status]}`}
+          ></span>
           {project.status}
         </span>
       </div>
 
-      <div className="text-xs text-muted font-mono mb-4">
-        {project.subnet} <span className="text-border">/</span> gw {project.gateway}
+      <div className="text-xs text-muted font-mono mb-1">
+        {project.subnet} <span className="text-border">/</span> gw{' '}
+        {project.gateway}
+      </div>
+      <div className="text-[10px] text-muted mb-4">
+        updated {relativeTime(project.updated_at)}
       </div>
 
       <div className="flex gap-2">
@@ -156,9 +204,18 @@ function ProjectCard({ project }: { project: Project }) {
         <button
           onClick={handleDelete}
           disabled={isBusy('delete')}
-          className="text-xs bg-bg border border-border text-offline px-3 py-1.5 rounded-md hover:border-offline disabled:opacity-50"
+          className={`text-xs px-3 py-1.5 rounded-md border disabled:opacity-50 ${
+            confirmDelete
+              ? 'bg-offline text-white border-offline'
+              : 'bg-bg border-border text-offline hover:border-offline'
+          }`}
+          title={
+            confirmDelete
+              ? 'Click again to confirm — this stops all containers and removes the bridge'
+              : 'Delete project'
+          }
         >
-          ×
+          {confirmDelete ? 'Confirm?' : '×'}
         </button>
       </div>
     </div>
