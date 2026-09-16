@@ -1,8 +1,8 @@
 """Admin endpoints — development only.
 
-These endpoints exist to let you exercise the Docker orchestration layer
-with curl while you build Phase 01. They accept arbitrary image names and
-commands, so in production they would be a remote-code-execution goldmine.
+These endpoints exist so the Docker orchestration layer can be exercised
+directly with curl. They accept arbitrary image names and commands, so in
+production they would be a remote-code-execution goldmine.
 
 They are protected by an ADMIN_TOKEN environment variable:
 
@@ -10,8 +10,7 @@ They are protected by an ADMIN_TOKEN environment variable:
   - ADMIN_TOKEN set + correct X-Admin-Token header → request proceeds
   - ADMIN_TOKEN set + missing/wrong header → 403
 
-After Phase 09 these endpoints are deleted entirely. The user-facing
-container-creation path is `POST /api/projects/{id}/start`.
+The user-facing container-creation path is `POST /api/projects/{id}/start`.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core import docker_client
+from app.core.config import settings
 from app.services import container_service
 
 
@@ -36,16 +36,11 @@ async def require_admin(x_admin_token: str | None = Header(default=None)) -> Non
 
     Declared as `dependencies=[Depends(require_admin)]` on every endpoint below.
     """
-    expected = docker_client.settings.ADMIN_TOKEN if hasattr(docker_client, "settings") else ""
-    # We import settings here to avoid a circular import at module load time.
-    from app.core.config import settings as _settings
-    expected = _settings.ADMIN_TOKEN
-
-    if not expected:
+    if not settings.ADMIN_TOKEN:
         # No token configured at all → the admin surface is OFF. This is
         # the safe default for any deployment that didn't explicitly opt in.
         raise HTTPException(status_code=403, detail="admin endpoints disabled")
-    if x_admin_token != expected:
+    if x_admin_token != settings.ADMIN_TOKEN:
         raise HTTPException(status_code=403, detail="invalid admin token")
 
 

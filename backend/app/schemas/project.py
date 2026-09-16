@@ -19,17 +19,45 @@ TopologyLiteral = Literal["mesh", "star", "ring", "bus", "tree"]
 # ─── requests ───────────────────────────────────────────────────────────────
 
 class ProjectCreateIn(BaseModel):
-    """Body for POST /api/projects."""
+    """Body for POST /api/projects.
+
+    ``subnet`` is optional: when omitted (or ``assign_subnet_automatically``
+    is true) the backend picks the next free ``/24`` in a reserved allocation
+    pool so multiple projects can coexist without colliding. The pool is
+    defined in ``project_service.ALLOCATION_POOL_START`` /
+    ``ALLOCATION_POOL_END`` (currently ``10.30.0.0/24`` .. ``10.99.0.0/24``).
+
+    If the caller passes a colliding subnet explicitly we surface a
+    structured 409 (not a 500) so the frontend can offer to retry with
+    auto-assignment.
+    """
     name: str = Field(..., min_length=1, max_length=100)
     topology_type: TopologyLiteral
     host_count: int = Field(..., ge=1, le=32)
-    subnet: str = Field(..., description="IPv4 CIDR, e.g. '10.20.0.0/24'")
+    subnet: str | None = Field(
+        default=None,
+        description=(
+            "IPv4 CIDR, e.g. '10.20.0.0/24'. If omitted (or "
+            "assign_subnet_automatically=true) the backend picks a unique /24."
+        ),
+    )
+    assign_subnet_automatically: bool = Field(
+        default=False,
+        description=(
+            "When true, ignore ``subnet`` and auto-assign a unique /24. "
+            "Default false so legacy callers that always send ``subnet`` "
+            "keep getting the subnet they asked for (with a clear 409 on "
+            "collision)."
+        ),
+    )
 
     @field_validator("subnet")
     @classmethod
-    def _looks_like_cidr(cls, v: str) -> str:
+    def _looks_like_cidr(cls, v: str | None) -> str | None:
         # Just sanity-check the format here; deeper validation (overlap with
         # reserved ranges, host-count fit) happens in the topology generator.
+        if v is None:
+            return v
         if "/" not in v:
             raise ValueError("subnet must be CIDR notation, e.g. '10.20.0.0/24'")
         return v

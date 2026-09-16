@@ -1,7 +1,6 @@
-// Dashboard — Phase 09 multi-project overview.
+// Dashboard — multi-project overview.
 //
-// Replaces the legacy "total/online/offline" host dashboard with a
-// platform-wide rollup + recent activity feed. Polls /api/stats/summary
+// Platform-wide rollup + recent activity feed. Polls /api/stats/summary
 // every 5s so the numbers stay fresh without the WS layer needing a new
 // event type.
 

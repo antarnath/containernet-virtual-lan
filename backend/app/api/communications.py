@@ -111,11 +111,9 @@ async def trigger_legacy_comm(
     """Legacy endpoint — operates on the legacy global `hosts` table only.
 
     .. deprecated::
-        Use ``POST /api/projects/{project_id}/communications`` instead. This
-        endpoint will be removed once all clients have migrated.
+        Use ``POST /api/projects/{project_id}/communications`` instead.
+        Returns 410 Gone so callers are forced to migrate.
     """
-    # Reuse the Phase-01 service path if you need the old behaviour.
-    # For now, return 410 Gone so callers are forced to migrate.
     raise HTTPException(
         status_code=410,
         detail=(

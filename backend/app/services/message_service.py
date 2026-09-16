@@ -119,7 +119,7 @@ async def clear_project_messages(session: AsyncSession, project_id: str) -> int:
 async def list_recent_messages(
     session: AsyncSession, limit: int = 100
 ) -> list[Message]:
-    """Cross-project recent feed — used by the Phase 09 dashboard summary."""
+    """Cross-project recent feed — used by the dashboard's recent activity tile."""
     result = await session.execute(
         select(Message)
         .order_by(Message.timestamp.desc(), Message.id.desc())

@@ -1,9 +1,9 @@
 """ProjectHost ORM model — one row per host inside a project.
 
 This is the per-project analogue of the legacy global ``Host`` table used
-by the static pc1/pc2/pc3 setup. We keep the legacy ``Host`` table intact
-during the dynamic transition — it backs the old ``/api/hosts`` endpoint
-until Phase 09 retires the static services.
+by the static pc1/pc2/pc3 setup. The legacy ``Host`` table is kept for
+backwards compatibility with the static edition and powers the old
+``/api/hosts`` endpoint.
 
 Key
 ---

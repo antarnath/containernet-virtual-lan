@@ -8,10 +8,18 @@
 //      so the backend validates source/dest against THIS project only.
 //   2. /communications → legacy global fallback that uses the old flat
 //      `/api/communications` endpoint.
+//
+// Direct navigation note:
+//   Both the project hosts AND the project metadata need to be fetched on
+//   mount. Previously only `fetchProject` ran — the TriggerPanel reads
+//   `hostStore.byProject[projectId]` and showed "Waiting for hosts…"
+//   forever when the page was opened directly (reload, new tab, bookmark)
+//   without having visited the Hosts or Topology page first.
 
 import { useEffect } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useCommStore } from '../store/commStore';
+import { useHostStore } from '../store/hostStore';
 import { useProjectStore } from '../store/projectStore';
 import TriggerPanel from '../components/trigger/TriggerPanel';
 import type { CommStatus } from '../types';
@@ -52,6 +60,19 @@ function ProjectCommunicationsPage({ projectId }: { projectId: string }) {
   useEffect(() => {
     void fetchProject(projectId);
   }, [projectId, fetchProject]);
+
+  // TriggerPanel reads from hostStore.byProject[projectId] to populate the
+  // From / To dropdowns. Without this fetch the panel shows "Waiting for
+  // hosts…" forever when the user lands directly on this URL (no prior
+  // visit to /hosts or /topology).
+  const fetchProjectHosts = useHostStore((s) => s.fetchProjectHosts);
+  useEffect(() => {
+    void fetchProjectHosts(projectId);
+    const id = setInterval(() => {
+      void fetchProjectHosts(projectId);
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [projectId, fetchProjectHosts]);
 
   const bundle = useCommStore((s) => s.byProject[projectId] ?? null);
   const fetchForProject = useCommStore((s) => s.fetchForProject);

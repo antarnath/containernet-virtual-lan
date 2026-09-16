@@ -1,23 +1,18 @@
 // Top-level routing. Each route is rendered inside the shared Layout
 // (sidebar + topbar + content area).
 //
-// Phase 04 introduces project-scoped routes:
+// Project-scoped routes:
 //   /builder                       — LAN Builder form (create a new project)
 //   /projects                      — grid of project cards
 //   /projects/:projectId/topology  — interactive topology view + lifecycle controls
-//
-// Phase 05 adds per-project hosts:
 //   /projects/:projectId/hosts     — hosts list + live metrics for one project
-//
-// Phase 06 adds per-project communications:
 //   /projects/:projectId/communications — trigger panel + log for one project
-//
-// Phase 08 adds per-project message consoles:
 //   /projects/:projectId/messages  — one console per host, streams in real time
 //
 // Legacy global routes (/topology, /hosts, /communications) are kept for
-// now — they still work against the static ContainerNet while we
-// transition. They'll be removed in Phase 09 polish.
+// the static ContainerNet edition. They render a project-less view that
+// reads the legacy flat endpoints; new code should target the per-project
+// routes above.
 
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/layout/Layout';
@@ -53,7 +48,8 @@ export default function App() {
             path="/projects/:projectId/messages"
             element={<MessagesPage />}
           />
-          {/* Legacy global routes — kept during transition. */}
+          {/* Legacy global routes for the static edition. New code should
+              target the per-project routes above. */}
           <Route path="/topology" element={<TopologyPage />} />
           <Route path="/hosts" element={<HostsPage />} />
           <Route path="/communications" element={<CommunicationsPage />} />

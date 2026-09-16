@@ -1,4 +1,4 @@
-"""Platform-wide summary stats — Phase 09.
+"""Platform-wide summary stats — dashboard overview aggregates.
 
 The dashboard's "Overview" page polls this endpoint every 5 seconds. It
 returns aggregates across every project + the most recent communications

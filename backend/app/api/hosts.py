@@ -37,6 +37,11 @@ from app.core import get_session
 from app.schemas.host import HostListResponse, HostOut
 from app.schemas.project import ProjectHostListResponse, ProjectHostOut
 from app.services import host_service
+from app.services.communication_service import _resolve_backend_lan_ip
+
+# Port the host-agent exposes its Prometheus /metrics on. Lives here as a
+# named constant so callers can spot the wire endpoint at a glance.
+HOST_AGENT_METRICS_PORT = 9100
 
 
 # Two routers — one for each URL prefix — keeps the legacy /hosts working
@@ -85,8 +90,8 @@ async def get_hosts(session: AsyncSession = Depends(get_session)):
     """Flat list of every host across every project.
 
     .. deprecated::
-        Use ``GET /api/projects/{project_id}/hosts`` instead. Kept during
-        the dynamic-edition transition; will be removed in Phase 09.
+        Use ``GET /api/projects/{project_id}/hosts`` instead. Kept for the
+        static ContainerNet edition; new code should not depend on it.
     """
     rows = await host_service.list_all_projects_hosts(session)
     # Also include legacy global ``Host`` rows so the static pc1/pc2/pc3
@@ -175,7 +180,15 @@ async def get_project_host_metrics(
             status_code=400,
             detail="host has no IP assigned yet",
         )
-    metrics_url = f"http://{row.ip_address}:9100/metrics"
+    # The host's stored `ip_address` is the project-bridge IP (e.g.
+    # 10.20.0.11) which is ONLY reachable from inside the project bridge.
+    # The backend sits on `containernet_containernet_lan`, so we resolve
+    # the agent's IP on that shared bridge via a quick Docker inspect on
+    # its container. Falls back to `row.ip_address` (which will time out
+    # with a 502) if the container is gone — deterministic failure beats
+    # a silent 0-respond crash.
+    agent_ip = _resolve_backend_lan_ip(row.container_id) or row.ip_address
+    metrics_url = f"http://{agent_ip}:{HOST_AGENT_METRICS_PORT}/metrics"
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get(metrics_url)

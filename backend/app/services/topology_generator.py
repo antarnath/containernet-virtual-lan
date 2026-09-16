@@ -115,7 +115,7 @@ def _validate_subnet(subnet: str, host_count: int) -> IPv4Network:
     return network
 
 
-def _ip_for(network: IPv4Network, host_index: int) -> str:
+def _ip_for_index(network: IPv4Network, host_index: int) -> str:
     """Return the IP address for ``host_index`` (1-based) within ``network``.
 
     The first 10 addresses after the network address are reserved; the
@@ -123,14 +123,6 @@ def _ip_for(network: IPv4Network, host_index: int) -> str:
     """
     if host_index < 1:
         raise ValueError("host_index must be 1-based")
-    base = int(network.network_address)
-    return str(IPv4Network((base + 10 + host_index)).network_address.__class__(
-        base + 10 + host_index
-    ))
-
-
-def _ip_for_index(network: IPv4Network, host_index: int) -> str:
-    """Internal: same as ``_ip_for`` but uses IPv4Address directly."""
     from ipaddress import IPv4Address
     return str(IPv4Address(int(network.network_address) + 10 + host_index))
 

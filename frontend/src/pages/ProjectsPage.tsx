@@ -1,4 +1,4 @@
-// Projects home — grid of project cards (Phase 09 polish).
+// Projects home — grid of project cards.
 //
 // Each card has:
 //   * A topology-colored left border (mesh=blue, star=purple, ring=green,

@@ -160,8 +160,8 @@ export function useWebSocket() {
       // For a project-to-project switch we still send `subscribe`; the
       // server replaces the previous subscription in place. For a
       // project->null transition (e.g. back to global dashboard) we
-      // simply stop subscribing — the server doesn't have an explicit
-      // unsubscribe envelope yet (Phase 08+ may add one).
+      // simply stop sending subscribes; the server has no explicit
+      // unsubscribe envelope today.
       if (nextId) {
         try {
           sock.send(JSON.stringify({ type: 'subscribe', project_id: nextId }));

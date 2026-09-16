@@ -20,7 +20,7 @@ export default function HostNode({ data }: { data: HostNodeData }) {
 
   return (
     <div
-      className={`bg-panel border-2 ${statusColor} rounded-lg px-4 py-3 shadow-lg min-w-[160px]`}
+      className={`bg-panel border-2 ${statusColor} rounded-lg px-4 py-3 shadow-lg min-w-[160px] cursor-grab active:cursor-grabbing select-none`}
     >
       {/* Source handle on top, target on bottom */}
       <Handle type="target" position={Position.Top} className="!bg-accent" />

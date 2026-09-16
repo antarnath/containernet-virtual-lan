@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from ipaddress import IPv4Address, IPv4Network
 
+from docker import errors as docker_errors
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -46,6 +47,56 @@ from app.services.topology_generator import (
 BACKEND_NETWORK = "containernet_containernet_lan"
 
 
+# ─── subnet allocation pool ─────────────────────────────────────────────────
+# When the user doesn't pin a subnet (or opts into auto-assignment) the
+# backend hands out the next free ``/24`` here so multiple projects can run
+# side-by-side without overlapping the Docker default bridge (172.17.0.0/16)
+# or the static demo LAN (10.10.0.0/24). The pool is private and well below
+# the reserved ranges we reject in ``topology_generator._validate_subnet``.
+ALLOCATION_POOL_START = IPv4Network("10.30.0.0/24")
+ALLOCATION_POOL_END   = IPv4Network("10.99.0.0/24")
+
+
+class SubnetInUseError(ValueError):
+    """Raised when the requested subnet is already taken by another project.
+
+    The API layer converts this into a 409 with a clear message pointing
+    the user at the duplicate project (or at the auto-assign toggle).
+    """
+
+
+async def _existing_subnets(session: AsyncSession) -> set[str]:
+    """Return the set of subnets already claimed by other projects.
+
+    Stored as canonical strings (e.g. ``"10.20.0.0/24"``) so they can be
+    compared with whatever ``ProjectCreateIn.subnet`` comes in as.
+    """
+    result = await session.execute(select(Project.subnet))
+    return {row[0] for row in result.all() if row[0]}
+
+
+def _next_free_subnet(used: set[str]) -> str:
+    """Return the next free /24 in :data:`ALLOCATION_POOL_START`..:data:`ALLOCATION_POOL_END`.
+
+    Raises ``SubnetInUseError`` if the pool is fully exhausted. Iteration
+    order is deterministic (lowest address first) so repeated calls hand
+    out the same subnet if no new project has claimed it.
+    """
+    start_int = int(ALLOCATION_POOL_START.network_address)
+    end_int   = int(ALLOCATION_POOL_END.network_address)
+    step      = 1 << (32 - 24)  # /24 stride = 256
+    cursor = start_int
+    while cursor <= end_int:
+        candidate = str(IPv4Network((cursor, 24)))
+        if candidate not in used:
+            return candidate
+        cursor += step
+    raise SubnetInUseError(
+        f"allocation pool {ALLOCATION_POOL_START}..{ALLOCATION_POOL_END} "
+        "is fully exhausted; delete an old project first"
+    )
+
+
 # ─── create ─────────────────────────────────────────────────────────────────
 
 async def create_project(
@@ -54,6 +105,12 @@ async def create_project(
 ) -> Project:
     """Generate topology + persist a new project. Returns the Project row.
 
+    Subnet resolution order:
+      1. If the body explicitly set ``subnet`` and did NOT ask for auto
+         assignment → validate uniqueness; raise :class:`SubnetInUseError`
+         on collision so the API can return a 409.
+      2. Otherwise → call :func:`_next_free_subnet` to auto-pick.
+
     Raises
     ------
     ValueError
@@ -61,24 +118,46 @@ async def create_project(
     BadSubnetError
         Subnet can't fit the requested host count or overlaps a reserved
         range.
+    SubnetInUseError
+        Caller explicitly asked for a subnet that's already taken.
     """
+    used = await _existing_subnets(session)
+
+    subnet: str
+    if body.subnet and not body.assign_subnet_automatically:
+        # Normalise via IPv4Network so e.g. "10.20.0.5/24" matches an
+        # existing "10.20.0.0/24" entry (Docker only stores the network
+        # address but users paste arbitrary hosts).
+        try:
+            canonical = str(IPv4Network(body.subnet, strict=False))
+        except Exception as exc:
+            raise BadSubnetError(f"invalid CIDR: {body.subnet!r}") from exc
+        if canonical in used:
+            raise SubnetInUseError(
+                f"subnet {canonical} is already used by another project; "
+                "pick a different subnet or enable assign_subnet_automatically"
+            )
+        subnet = canonical
+    else:
+        subnet = _next_free_subnet(used)
+
     try:
         nodes, edges = generate_topology(
             topology_type=body.topology_type,
             host_count=body.host_count,
-            subnet=body.subnet,
+            subnet=subnet,
         )
     except (BadSubnetError, ValueError):
         raise
 
-    network = IPv4Network(body.subnet, strict=False)
+    network = IPv4Network(subnet, strict=False)
     gateway = str(IPv4Address(int(network.network_address) + 1))
 
     project = Project(
         name=body.name,
         topology_type=body.topology_type,
         host_count=body.host_count,
-        subnet=body.subnet,
+        subnet=subnet,
         gateway=gateway,
         status=ProjectStatus.DRAFT,
     )
@@ -173,13 +252,31 @@ async def start_project(session: AsyncSession, project_id: str) -> Project | Non
 
     Idempotent: if containers already exist for this project (e.g. partial
     state from a previous run), we don't double-spawn — we record their IDs.
+
+    Raises
+    ------
+    SubnetInUseError
+        Docker rejected the bridge with a "Pool overlaps" 403 — another
+        network on the host already claims this address space. The API
+        layer turns this into a 409 so the frontend can prompt the user
+        to update the project's subnet.
     """
     project = await get_project(session, project_id)
     if project is None:
         return None
 
-    # 1. Bridge
-    net_name = network_service.create_project_network(project)
+    # 1. Bridge — translate Docker's opaque 403 into our structured error
+    #    so the API layer can return a clean 409 instead of a 500.
+    try:
+        net_name = network_service.create_project_network(project)
+    except docker_errors.APIError as exc:
+        if "pool overlaps" in str(exc).lower():
+            raise SubnetInUseError(
+                f"subnet {project.subnet} is already claimed by another "
+                "Docker network on this host. Edit the project's subnet "
+                "to a free range (e.g. 10.40.0.0/24) and try again."
+            ) from exc
+        raise
 
     # 2. Spawn
     hosts_data = [

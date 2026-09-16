@@ -1,26 +1,10 @@
 // Vertical navigation bar.
 //
-// Phase 05 additions:
-//   * A project switcher dropdown at the top — when a project is loaded
-//     into `useProjectStore.current`, jumping to /projects routes auto-
-//     picks that project.
-//   * A nested section under the active project: Topology + Hosts links.
-//
-// Phase 06 additions:
-//   * The nested section now also has a Communications link (scoped to
-//     the active project).
-//
-// Phase 07:
-//   * No UI changes here — the per-project WS subscriptions happen below
-//     the navigation layer, in useWebSocket + the realtime store.
-//
-// Phase 08:
-//   * Added the per-project "Messages" link — routes to the per-host
-//     message consoles page that streams message bubbles in real time.
-//
-// Each nested link is enabled ONLY when a project is currently loaded.
-// Global links (Dashboard, Projects, LAN Builder, Comms legacy, Hosts
-// legacy) stay always-visible.
+// Two layers:
+//   * Global links — Dashboard, Projects, LAN Builder, legacy Hosts/Comms.
+//   * Per-project nested section — Topology, Hosts, Communications, Messages
+//     for the project currently loaded into `useProjectStore.current`.
+//     Hidden until the user picks (or opens) a project.
 
 import { useEffect } from 'react';
 import { useNavigate, NavLink } from 'react-router-dom';
@@ -65,7 +49,8 @@ export default function Sidebar() {
         <div className="text-xs text-muted mt-1">Dynamic Virtual LAN</div>
       </div>
 
-      {/* Project switcher (Phase 05) */}
+      {/* Project switcher — when a project is loaded into the store,
+          jumping to /projects auto-picks that project. */}
       <div className="px-3 pt-3">
         <div className="text-[10px] uppercase tracking-wider text-muted mb-1 px-2">
           Active project
@@ -110,7 +95,8 @@ export default function Sidebar() {
           </NavLink>
         ))}
 
-        {/* Per-project nested section (Phase 05/06/08) */}
+        {/* Per-project nested section — shows Topology / Hosts / Communications
+            / Messages for the active project. */}
         {current && (
           <div className="pt-4 mt-2 border-t border-border">
             <div className="text-[10px] uppercase tracking-wider text-muted px-3 mb-1">
@@ -139,10 +125,6 @@ export default function Sidebar() {
           </div>
         )}
       </nav>
-
-      <div className="px-5 py-3 border-t border-border text-[10px] text-muted">
-        v0.10.0 · Phase 09 (in progress)
-      </div>
     </aside>
   );
 }

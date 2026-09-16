@@ -124,7 +124,10 @@ export interface ProjectCreate {
   name: string;
   topology_type: TopologyType;
   host_count: number;
-  subnet: string;
+  /** IPv4 CIDR. Optional when assign_subnet_automatically=true. */
+  subnet?: string;
+  /** When true, omit subnet / ignore the field and let the backend pick. */
+  assign_subnet_automatically?: boolean;
 }
 
 export interface NodePosition {
@@ -173,7 +176,7 @@ export interface MessageListResponse {
   total: number;
 }
 
-// ─── Platform stats (Phase 09) ────────────────────────────────────────────
+// ─── Platform stats (dashboard overview) ───────────────────────────────────
 
 export interface StatsSummary {
   projects: {

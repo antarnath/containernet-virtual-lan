@@ -27,9 +27,9 @@ async def offline_sweeper() -> None:
 
 
 async def _graceful_shutdown() -> None:
-    """Phase 09 — stop every spawned host container before the process
-    exits, then mark the projects as ``stopped`` in the DB so the next
-    start is a clean restart rather than an orphan-state recovery.
+    """Stop every spawned host container before the process exits, then
+    mark the projects as ``stopped`` in the DB so the next start is a
+    clean restart rather than an orphan-state recovery.
 
     This runs when Docker sends SIGTERM (``docker compose down`` /
     ``restart``). Bridge networks are intentionally left in place — they're
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
         print("[main] admin endpoints DISABLED (ADMIN_TOKEN unset)")
 
     yield
-    # Shutdown — Phase 09: stop every spawned container before exiting.
+    # Shutdown — stop every spawned container before exiting.
     sweeper_task.cancel()
     try:
         await sweeper_task

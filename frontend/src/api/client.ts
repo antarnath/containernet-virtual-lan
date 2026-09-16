@@ -207,7 +207,7 @@ export const MessagesAPI = {
 };
 
 export const StatsAPI = {
-  /** Phase 09 — platform-wide summary used by the Overview dashboard. */
+  /** Platform-wide summary used by the Overview dashboard. */
   summary: async (limitRecent = 20): Promise<StatsSummary> => {
     const { data } = await api.get<StatsSummary>('/stats/summary', {
       params: { limit_recent: limitRecent },

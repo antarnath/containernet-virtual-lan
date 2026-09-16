@@ -14,9 +14,9 @@ api_router.include_router(topology.router, prefix="")
 # /projects/{id}/communications.
 api_router.include_router(communications.legacy_router, prefix="")
 api_router.include_router(communications.project_router, prefix="")
-# Phase 08 — per-host message windows.
+# Per-host message windows.
 api_router.include_router(messages.router, prefix="")
-# Phase 09 — platform summary stats.
+# Platform summary stats.
 api_router.include_router(stats.router, prefix="")
 
 __all__ = ["api_router"]

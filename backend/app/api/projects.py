@@ -30,6 +30,7 @@ from app.schemas.project import (
     ProjectOut,
 )
 from app.services import project_service
+from app.services.project_service import SubnetInUseError
 from app.services.topology_generator import BadSubnetError
 
 
@@ -93,6 +94,11 @@ async def create_project(
     """Create a new project. Generates topology graph + persists."""
     try:
         project = await project_service.create_project(session, body)
+    except SubnetInUseError as exc:
+        # 409 = explicit conflict. The frontend can offer to retry with
+        # ``assign_subnet_automatically=true`` so the user doesn't have to
+        # invent subnet math themselves.
+        raise HTTPException(status_code=409, detail=str(exc))
     except BadSubnetError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
@@ -183,8 +189,14 @@ async def start_project(
 
     Idempotent: re-running just re-uses existing containers if any.
     Status field becomes ``running`` (or ``partial`` if some hosts failed).
+
+    Returns 409 if the project's subnet collides with an existing Docker
+    network on the host — the user needs to edit the subnet and retry.
     """
-    project = await project_service.start_project(session, project_id)
+    try:
+        project = await project_service.start_project(session, project_id)
+    except SubnetInUseError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     return ProjectDetailOut(

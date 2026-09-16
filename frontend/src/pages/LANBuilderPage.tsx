@@ -20,11 +20,19 @@ export default function LANBuilderPage() {
   const [name, setName] = useState('');
   const [topology, setTopology] = useState<TopologyType>('mesh');
   const [hostCount, setHostCount] = useState(5);
+  // Auto-assign is on by default so two consecutive projects never collide
+  // on the same Docker bridge subnet. Power users can toggle it off and
+  // pick a /24 themselves.
+  const [autoSubnet, setAutoSubnet] = useState(true);
   const [subnet, setSubnet] = useState('10.20.0.0/24');
   const [submitting, setSubmitting] = useState(false);
 
+  // Validation: when auto-assigning we don't care what the field says; when
+  // not, the subnet must look like CIDR (e.g. "10.20.0.0/24").
   const valid =
-    name.trim().length >= 1 && hostCount >= 1 && subnet.includes('/');
+    name.trim().length >= 1 &&
+    hostCount >= 1 &&
+    (autoSubnet || subnet.includes('/'));
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -35,13 +43,21 @@ export default function LANBuilderPage() {
         name: name.trim(),
         topology_type: topology,
         host_count: hostCount,
-        subnet: subnet.trim(),
+        // When auto-assigning, send the flag (and skip the field) so the
+        // backend hands out a unique /24 from its allocation pool. Without
+        // the flag, a manually-typed subnet still wins and the backend
+        // returns 409 on collision so the user can retry with auto on.
+        ...(autoSubnet
+          ? { assign_subnet_automatically: true }
+          : { subnet: subnet.trim() }),
       });
       if (project) {
         pushToast({
           kind: 'success',
           title: 'Project created',
-          message: `${project.name} — hit Start to bring up containers.`,
+          message:
+            `${project.name} — subnet ${project.subnet}. ` +
+            'Hit Start to bring up containers.',
         });
         navigate(`/projects/${project.id}/topology`);
       }
@@ -142,19 +158,32 @@ export default function LANBuilderPage() {
 
         {/* Subnet */}
         <div>
-          <label className="block text-xs uppercase tracking-wider text-muted mb-2">
-            Subnet (CIDR)
-          </label>
+          <div className="flex items-center justify-between mb-2">
+            <label className="block text-xs uppercase tracking-wider text-muted">
+              Subnet (CIDR)
+            </label>
+            <label className="flex items-center gap-2 text-xs text-muted cursor-pointer hover:text-text">
+              <input
+                type="checkbox"
+                checked={autoSubnet}
+                onChange={(e) => setAutoSubnet(e.target.checked)}
+                className="accent-accent"
+              />
+              Auto-assign a unique /24
+            </label>
+          </div>
           <input
             type="text"
             value={subnet}
             onChange={(e) => setSubnet(e.target.value)}
-            placeholder="10.20.0.0/24"
-            className="w-full bg-bg border border-border rounded-md px-3 py-2 text-text font-mono placeholder:text-muted focus:border-accent focus:outline-none"
+            disabled={autoSubnet}
+            placeholder={autoSubnet ? 'auto — backend will pick' : '10.20.0.0/24'}
+            className="w-full bg-bg border border-border rounded-md px-3 py-2 text-text font-mono placeholder:text-muted focus:border-accent focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
           />
           <p className="text-xs text-muted mt-1">
-            The /24 subnet fits up to 254 hosts. Pick something unique to avoid
-            clashes with other Docker networks.
+            {autoSubnet
+              ? 'The backend will hand out the next free /24 in 10.30.0.0/24 .. 10.99.0.0/24 so this project won’t collide with anything else on the host.'
+              : 'Pick a /24 (up to 254 hosts). Must be unique across your projects — collisions return a 409 with a clear message.'}
           </p>
         </div>
 
