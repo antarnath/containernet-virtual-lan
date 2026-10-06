@@ -23,6 +23,7 @@ import CommunicationsPage from './pages/CommunicationsPage';
 import MessagesPage from './pages/MessagesPage';
 import LANBuilderPage from './pages/LANBuilderPage';
 import ProjectsPage from './pages/ProjectsPage';
+import ProjectLog from './pages/ProjectLog';
 
 export default function App() {
   return (
@@ -47,6 +48,10 @@ export default function App() {
           <Route
             path="/projects/:projectId/messages"
             element={<MessagesPage />}
+          />
+          <Route
+            path="/projects/:projectId/log"
+            element={<ProjectLog />}
           />
           {/* Legacy global routes for the static edition. New code should
               target the per-project routes above. */}

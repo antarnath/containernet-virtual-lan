@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from . import admin, communications, health, hosts, messages, projects, stats, topology
+from . import admin, communications, health, hosts, messages, packets, projects, stats, topology
 
 api_router = APIRouter()
 api_router.include_router(admin.router, prefix="")
@@ -16,6 +16,8 @@ api_router.include_router(communications.legacy_router, prefix="")
 api_router.include_router(communications.project_router, prefix="")
 # Per-host message windows.
 api_router.include_router(messages.router, prefix="")
+# Per-project packet log (M2-07 dashboard).
+api_router.include_router(packets.router, prefix="")
 # Platform summary stats.
 api_router.include_router(stats.router, prefix="")
 

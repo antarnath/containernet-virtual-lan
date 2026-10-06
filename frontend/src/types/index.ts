@@ -202,3 +202,83 @@ export interface StatsSummary {
     timestamp: string | null;
   }>;
 }
+
+// ─── Packets (M2-07 dashboard) ──────────────────────────────────────────────
+
+export interface PacketL2Frame {
+  src_mac: string;
+  dst_mac: string;
+  ethertype: number;
+  ethertype_name: string;
+  is_broadcast: boolean;
+  crc_ok?: boolean;
+  linktype?: number;
+  _error?: string;
+}
+
+export interface PacketL3IPv4 {
+  version: number;
+  ihl: number;
+  dscp: number;
+  ecn: number;
+  total_length: number;
+  identification: string;
+  flags: string;
+  fragment_offset: number;
+  ttl: number;
+  protocol: number;
+  protocol_name: string;
+  checksum: string;
+  checksum_ok: boolean;
+  src_ip: string;
+  dst_ip: string;
+}
+
+export interface PacketL4TCP {
+  src_port: number;
+  dst_port: number;
+  seq: number;
+  ack: number;
+  data_offset: number;
+  flags: string[];
+  flags_bits: string;
+  window: number;
+  checksum: string;
+  checksum_ok: boolean;
+  urgent: number;
+  options: Array<Record<string, unknown>>;
+  payload_len: number;
+}
+
+export interface PacketL7HTTP {
+  is_request?: boolean;
+  is_response?: boolean;
+  method?: string;
+  path?: string;
+  version?: string;
+  status_code?: number;
+  status_text?: string;
+  headers: Record<string, string>;
+  body_decoded: string;
+  body_truncated?: boolean;
+}
+
+export interface PacketEvent {
+  id: number;
+  ts: string;
+  ts_ns: number;
+  iface: string;
+  len: number;
+  l2: PacketL2Frame;
+  l3: PacketL3IPv4 | null;
+  l4: PacketL4TCP | null;
+  l7: PacketL7HTTP | null;
+  summary: string;
+  sections: Array<Record<string, unknown>>;
+}
+
+export interface PacketListResponse {
+  events: PacketEvent[];
+  since: number;
+  limit: number;
+}

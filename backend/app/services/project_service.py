@@ -294,6 +294,22 @@ async def start_project(session: AsyncSession, project_id: str) -> Project | Non
         hosts=hosts_data,
     )
 
+    # 2b. Spawn the capture container (M2-07 §2). Best-effort: a missing
+    #     capture image must not break project startup, so any failure is
+    #     logged but does NOT set PARTIAL.
+    try:
+        container_service.spawn_project_capture(
+            project_id=project.id,
+            project_network=net_name,
+        )
+    except Exception:
+        # Dashboard will surface "no capture container" via 409 from
+        # the packets endpoints; not fatal here.
+        import logging
+        logging.getLogger(__name__).warning(
+            "capture container for project %s failed to start", project.id
+        )
+
     # 3. Persist container_ids back to DB rows
     by_host_id = {r["host_id"]: r for r in spawn_results}
     for h in project.hosts:
@@ -337,11 +353,13 @@ async def delete_project(session: AsyncSession, project_id: str) -> bool:
 
     Order matters:
       1. Force-remove containers (so the bridge isn't left dangling).
+         This includes the per-project capture container (M2-07).
       2. Remove the bridge network.
       3. Delete the project row (cascade removes hosts + edges).
     """
     # 1. Containers
     container_service.remove_project_hosts(project_id, force=True)
+    container_service.remove_project_capture(project_id, force=True)
 
     # 2. Network
     network_service.remove_project_network(project_id)

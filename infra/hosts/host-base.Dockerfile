@@ -16,7 +16,8 @@ RUN apk add --no-cache \
         curl \
         iputils \
         busybox-extras \
-        bash
+        bash \
+        tcpdump
 
 # Install the Host Agent's Python dependencies.
 # These go in the base image so each per-host Dockerfile doesn't reinstall.

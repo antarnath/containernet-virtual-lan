@@ -107,6 +107,12 @@ function ProjectCommunicationsPage({ projectId }: { projectId: string }) {
         >
           ← Back to topology
         </Link>
+        <Link
+          to={`/projects/${projectId}/log`}
+          className="text-sm bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 px-3 py-2 rounded-md hover:bg-emerald-500/20"
+        >
+          📜 View TCP log
+        </Link>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

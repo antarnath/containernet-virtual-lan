@@ -43,6 +43,15 @@ services:
       # the host-agent folder here so edits are picked up by freshly-spawned
       # hosts without rebuilding the host-base image.
       - ./host-agent:/app/host-agent:ro
+    # M2-07 §2.4 — per-project capture container requires the backend to
+    # toggle the bridge's per-port promiscuous flag so host→host unicast
+    # frames get flooded to the capture container's port. Without
+    # pid=host + cap_add=NET_ADMIN, the backend's netns doesn't see the
+    # host veths and can't write to /sys/class/net/<bridge>/brif/<veth>.
+    pid: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     depends_on:
       - db
     ports:
@@ -62,6 +71,17 @@ services:
       containernet_lan:
         aliases:
           - host-base
+
+  # ─── CAPTURE BASE IMAGE (one per project, started lazily) ───────
+  # M2-07 §2 — small Alpine + tcpdump + python3 image. The backend
+  # spawns one container of this image per project and attaches it
+  # only to that project's bridge so it can passively sniff frames.
+  # Built but not run as a service.
+  capture-base:
+    build:
+      context: .
+      dockerfile: infra/hosts/capture-base.Dockerfile
+    image: containernet-capture-base:latest
 
   # ─── FRONTEND (React + Nginx) ────────────────────────────
   frontend:

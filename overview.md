@@ -382,17 +382,18 @@ ContainerNet/
 │   ├── screenshots/
 │
 ├── phases/                          # Internal dev roadmap (not pushed to git)
-│   ├── README.md                    # Roadmap with current-state status table
-│   ├── phase_00_project_reset.md            ✅ Complete
-│   ├── phase_01_docker_orchestration.md     ✅ Complete
-│   ├── phase_02_projects_and_topology_templates.md   ✅ Complete
-│   ├── phase_03_dynamic_host_lifecycle.md   📋 Planned
-│   ├── phase_04_dynamic_topology_visualization.md    📋 Planned
-│   ├── phase_05_per_project_monitoring.md   📋 Planned
-│   ├── phase_06_project_scoped_communication.md      📋 Planned
-│   ├── phase_07_realtime_websocket.md       📋 Planned
-│   ├── phase_08_message_windows.md          📋 Planned
-│   └── phase_09_polish_and_docs.md          📋 Planned
+│   └── milestone-1/                 # Milestone 1 phase documents
+│       ├── README.md                # Roadmap with current-state status table
+│       ├── phase_00_project_reset.md            ✅ Complete
+│       ├── phase_01_docker_orchestration.md     ✅ Complete
+│       ├── phase_02_projects_and_topology_templates.md   ✅ Complete
+│       ├── phase_03_dynamic_host_lifecycle.md   📋 Planned
+│       ├── phase_04_dynamic_topology_visualization.md    📋 Planned
+│       ├── phase_05_per_project_monitoring.md   📋 Planned
+│       ├── phase_06_project_scoped_communication.md      📋 Planned
+│       ├── phase_07_realtime_websocket.md       📋 Planned
+│       ├── phase_08_message_windows.md          📋 Planned
+│       └── phase_09_polish_and_docs.md          📋 Planned
 │
 └── scripts/
     ├── seed_hosts.py                # Legacy — kept only for migration

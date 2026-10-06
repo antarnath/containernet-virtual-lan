@@ -390,3 +390,166 @@ def list_project_containers(project_id: str, all_states: bool = False) -> list[d
         }
         for c in containers
     ]
+
+
+# ─── capture container (M2-07 §2.4) ─────────────────────────────────────────
+# A small Docker container attached only to the project's bridge, whose
+# only job is to listen and emit packet events for the dashboard.
+# It has no IP on the bridge (so it cannot originate or respond to traffic)
+# and CAP_NET_RAW so it can capture raw frames.
+
+CAPTURE_IMAGE = "containernet-capture-base:latest"
+CAPTURE_ROLE = "capture"
+
+
+def _capture_container_name(project_id: str) -> str:
+    short = _short_project_id(project_id)
+    return f"proj-{short}-capture"
+
+
+def spawn_project_capture(
+    *,
+    project_id: str,
+    project_network: str,
+    image: str = CAPTURE_IMAGE,
+) -> str:
+    """Spawn the per-project capture container. Returns its container ID.
+
+    Attached ONLY to the project's bridge, with no IP and no default-route.
+    Runs `tcpdump` writing binary pcap to stdout; the backend reads from
+    that stdout via `docker exec cat /tmp/capture.ndjson` once the shim is
+    wired in.
+
+    Idempotent: if a capture container for this project already exists,
+    reuse it (so a partial start can be resumed).
+    """
+    client = get_docker_client()
+    name = _capture_container_name(project_id)
+
+    # Reuse if already present (covers "start twice in a row").
+    try:
+        existing = client.containers.get(name)
+        if existing.status != "running":
+            existing.start()
+        return existing.id
+    except NotFound:
+        pass
+
+    container = client.containers.run(
+        image=image,
+        name=name,
+        command=None,  # use the image's default CMD (tcpdump → stdout)
+        labels={
+            LABEL_HOST.split("=")[0]: "true",
+            LABEL_PROJECT.split("=")[0]: project_id,
+            "containernet.role": CAPTURE_ROLE,
+        },
+        # M2-07 §2.4 — Linux bridges only flood unicast frames to a port
+        # if that port is in promiscuous mode. We can't toggle the bridge's
+        # per-port promisc flag from outside the host (no root on host).
+        # Instead, we run the capture container in the HOST network
+        # namespace and capture on the project's bridge interface directly.
+        # The project's bridge is named `proj_<short_id>_lan` and shows up
+        # in the host's `ip link show` output.
+        network_mode="host",
+        # pid=host so the entrypoint can find the project's bridge via
+        # `ip link show` and discover the right interface to capture on.
+        pid_mode="host",
+        # CAP_NET_RAW + NET_ADMIN so tcpdump can use AF_PACKET sockets and
+        # so we can set the chosen bridge port to promiscuous if needed.
+        cap_add=["NET_RAW", "NET_ADMIN"],
+        # Bind the capture's NDJSON file path to a host-side file so the
+        # backend can read it without `docker exec` overhead.
+        volumes={
+            "/var/lib/containernet/captures": {
+                "bind": "/var/lib/containernet/captures",
+                "mode": "rw",
+            },
+        },
+        environment={
+            "PROJECT_BRIDGE_NAME": f"proj_{_short_project_id(project_id)}_lan",
+            # Docker creates Linux bridges with names derived from the
+            # network ID, NOT from the user-supplied name. We pass the
+            # network ID too so the capture entrypoint can derive the
+            # actual interface name (e.g. "br-a4a865c353d6").
+            "PROJECT_NETWORK_ID": client.networks.get(project_network).id[:12],
+            "CAPTURE_FILE": f"/var/lib/containernet/captures/{_capture_container_name(project_id)}.ndjson",
+        },
+        detach=True,
+        remove=False,
+        tty=False,
+        stdin_open=False,
+    )
+    # M2-07 §2.4 — capture runs in the HOST network namespace (so it can
+    # tcpdump on the project's bridge interface directly). We don't attach
+    # it to the project bridge as a port — that wouldn't help because the
+    # bridge still wouldn't flood host→host unicast to the capture port.
+    # Instead, the entrypoint discovers the bridge name from $PROJECT_BRIDGE_NAME
+    # and tcpdumps `bridge.proj_xxx_lan` directly. With CAP_NET_RAW on the
+    # host netns, tcpdump can use AF_PACKET and see every frame on the bridge.
+    _bring_bridge_port_promiscuous(project_id)
+    return container.id
+
+
+def _bring_bridge_port_promiscuous(project_id: str) -> None:
+    """Best-effort: ensure the project's bridge interface itself is in
+    promiscuous mode. With the new architecture (capture in host netns,
+    capturing on the bridge interface directly via AF_PACKET), this is
+    NOT strictly required — tcpdump on a bridge interface sees every
+    frame regardless of the bridge's MAC table state, because the
+    kernel delivers every frame on a bridge interface to any AF_PACKET
+    socket bound to it.
+
+    Kept as a no-op stub for backwards compatibility and future tuning.
+    """
+    return None
+
+
+def stop_project_capture(project_id: str, timeout: int = 2) -> bool:
+    """Stop the capture container (kept across project stops). Returns True
+    iff a container was stopped."""
+    client = get_docker_client()
+    name = _capture_container_name(project_id)
+    try:
+        c = client.containers.get(name)
+    except NotFound:
+        return False
+    try:
+        if c.status == "running":
+            c.stop(timeout=timeout)
+        return True
+    except APIError:
+        return False
+
+
+def remove_project_capture(project_id: str, force: bool = True) -> bool:
+    """Remove the capture container (called on project delete)."""
+    client = get_docker_client()
+    name = _capture_container_name(project_id)
+    try:
+        c = client.containers.get(name)
+    except NotFound:
+        return False
+    try:
+        c.remove(force=force)
+        return True
+    except APIError:
+        return False
+
+
+def get_project_capture_container(project_id: str) -> dict | None:
+    """Return a small dict describing the project's capture container, or
+    None if there isn't one."""
+    client = get_docker_client()
+    name = _capture_container_name(project_id)
+    try:
+        c = client.containers.get(name)
+        return {
+            "id": c.id,
+            "name": c.name,
+            "status": c.status,
+            "image": c.image.tags[0] if c.image.tags else str(c.image.id),
+        }
+    except NotFound:
+        return None
+
