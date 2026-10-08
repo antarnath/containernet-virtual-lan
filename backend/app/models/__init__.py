@@ -24,6 +24,12 @@ from app.models.project_node import ProjectNode, NodeKind, ATTACK_MODES
 from app.models.project_interface import ProjectInterface
 from app.models.project_link import ProjectLink
 from app.models.project_capture import ProjectCapture
+# M4 phase 03 — anomaly detector
+from app.models.anomaly_event import (
+    AnomalyEvent,
+    AnomalyKind,
+    AnomalySeverity,
+)
 
 __all__ = [
     "Base",
@@ -34,4 +40,6 @@ __all__ = [
     "ProjectInterface",
     "ProjectLink",
     "ProjectCapture",
+    # M4 phase 03
+    "AnomalyEvent", "AnomalyKind", "AnomalySeverity",
 ]

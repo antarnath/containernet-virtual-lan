@@ -5,14 +5,20 @@
 // Phase 02 wires those buttons to the real backend. Start/stop/restart
 // all return the updated ProjectDetail, so we replace the store's
 // `current` with the response — no need for a follow-up fetch.
+//
+// Phase 03 mounts a side panel when the user clicks a router node.
+// The panel streams live routes/ARP/ifaces and surfaces anomaly
+// events from the project's WebSocket channel.
 
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { useProjectStore } from '../store/projectStore';
+import { useRealtimeStore } from '../store/realtimeStore';
 import { Button, Card, LoadingSkeleton, StatusPill, toast } from '../components/ui';
-import { Canvas } from '../canvas';
+import { Canvas, type OpenNodePayload } from '../canvas';
 import { ProjectsAPI } from '../api/client';
+import { RouterPanel } from '../panels/RouterPanel';
 import type { ProjectDetail, ProjectStatus } from '../types';
 
 const STATUS_TONE: Record<ProjectStatus, 'idle' | 'draft' | 'starting' | 'running' | 'partial' | 'stopped' | 'error'> = {
@@ -43,6 +49,17 @@ export default function ProjectCanvas() {
   const fetchProject = useProjectStore((s) => s.fetchProject);
   const clearCurrent = useProjectStore((s) => s.clearCurrent);
 
+  // Connect the realtime store to this project. It opens a single
+  // WebSocket per project and merges in any REST-snapshot anomalies
+  // we have on hand. Disconnects on unmount.
+  useEffect(() => {
+    if (!projectId) return;
+    useRealtimeStore.getState().connect(projectId);
+    return () => {
+      useRealtimeStore.getState().disconnect();
+    };
+  }, [projectId]);
+
   useEffect(() => {
     if (!projectId) return;
     void fetchProject(projectId);
@@ -52,6 +69,27 @@ export default function ProjectCanvas() {
       clearCurrent();
     };
   }, [projectId, fetchProject, clearCurrent]);
+
+  // Which node (if any) is open in the right-hand panel.
+  const [openNode, setOpenNode] = useState<OpenNodePayload | null>(null);
+
+  // When the project reloads (start/stop), if the open node vanished
+  // or its kind changed, close the panel.
+  useEffect(() => {
+    if (!openNode || !current) return;
+    const stillExists = current.nodes.find((n) => n.id === openNode.nodeId);
+    if (!stillExists || stillExists.kind !== 'router') {
+      setOpenNode(null);
+    }
+  }, [openNode, current]);
+
+  const handleOpenNode = useCallback((p: OpenNodePayload) => {
+    setOpenNode(p);
+  }, []);
+
+  const handleClosePanel = useCallback(() => {
+    setOpenNode(null);
+  }, []);
 
   async function handleLifecycle(op: LifecycleOp) {
     if (!projectId) return;
@@ -181,9 +219,20 @@ export default function ProjectCanvas() {
         </div>
       </div>
 
-      {/* Canvas surface */}
-      <div className="flex-1 min-h-0">
-        <Canvas projectId={current.id} />
+      {/* Canvas surface + optional router panel */}
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0">
+          <Canvas projectId={current.id} onOpenNode={handleOpenNode} />
+        </div>
+        {openNode && (
+          <RouterPanel
+            projectId={current.id}
+            nodeId={openNode.nodeId}
+            nodeName={openNode.nodeName}
+            containerStatus={openNode.containerStatus}
+            onClose={handleClosePanel}
+          />
+        )}
       </div>
     </div>
   );

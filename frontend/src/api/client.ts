@@ -142,6 +142,18 @@ export const ProjectsAPI = {
     ): Promise<void> => {
       await api.delete(`/projects/${projectId}/nodes/${nodeId}`);
     },
+    // Live state for a single node (phase 03). For routers, includes
+    // the cached /state/all payload from the agent. Always includes
+    // the open + recent anomalies list.
+    state: async (
+      projectId: string,
+      nodeId: string,
+    ): Promise<NodeLiveState> => {
+      const { data } = await api.get<NodeLiveState>(
+        `/projects/${projectId}/nodes/${nodeId}/state`,
+      );
+      return data;
+    },
   },
 
   // ─── Interface CRUD ─────────────────────────────────────────────
@@ -195,6 +207,82 @@ export const ProjectsAPI = {
       await api.delete(`/projects/${projectId}/links/${linkId}`);
     },
   },
+
+  // ─── Anomalies (phase 03) ─────────────────────────────────────
+  anomalies: {
+    list: async (
+      projectId: string,
+      includeResolved = false,
+    ): Promise<{ project_id: string; anomalies: AnomalyEvent[] }> => {
+      const { data } = await api.get<{
+        project_id: string;
+        anomalies: AnomalyEvent[];
+      }>(`/projects/${projectId}/anomalies`, {
+        params: { include_resolved: includeResolved },
+      });
+      return data;
+    },
+    dismiss: async (
+      projectId: string,
+      anomalyId: string,
+    ): Promise<{ id: string; resolved_at: string }> => {
+      const { data } = await api.post<{ id: string; resolved_at: string }>(
+        `/projects/${projectId}/anomalies/${anomalyId}/dismiss`,
+      );
+      return data;
+    },
+  },
 };
 
 export default api;
+
+// ─── Phase 03 — live node state + anomaly shapes ─────────────────────
+
+export interface AnomalyEvent {
+  id: string;
+  /** The anomaly kind, e.g. "arp_mac_change", "neigh_stale". */
+  kind: string;
+  /** "info" | "warn" | "danger". */
+  severity: 'info' | 'warn' | 'danger';
+  summary: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+  resolved_at: string | null;
+  /** Only present on list endpoints. */
+  node_id?: string;
+}
+
+export interface NodeLiveState {
+  node_id: string;
+  name: string;
+  kind: string;
+  container_id: string | null;
+  container_status: string;
+  anomalies: AnomalyEvent[];
+  /** null for non-router nodes. */
+  router: {
+    routes: Array<{
+      destination: string;
+      gateway: string;
+      iface: string;
+      protocol: string;
+      scope: string;
+      source: string;
+    }>;
+    neigh: Array<{
+      ip: string;
+      iface: string;
+      mac: string;
+      state: string;
+      age: string;
+    }>;
+    ifaces: Array<{
+      name: string;
+      state: string;
+      ip_mask: string;
+      mac: string;
+    }>;
+    fetched_at: number;
+    error: string | null;
+  } | null;
+}

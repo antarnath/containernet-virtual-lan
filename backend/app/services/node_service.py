@@ -250,7 +250,13 @@ def _reattach_to_bridges(
     node kinds that need it (host, server, attacker).
     """
     kind = NodeKind(node.kind) if isinstance(node.kind, str) else node.kind
-    needs_backend = kind in (NodeKind.HOST, NodeKind.SERVER, NodeKind.ATTACKER)
+    # Routers also need backend access — not for heartbeats, but so
+    # the phase-03 router_proxy can reach their :9090 agent for the
+    # live panel. The agent's IP on the backend network is what the
+    # proxy uses to make the HTTP call.
+    needs_backend = kind in (
+        NodeKind.HOST, NodeKind.SERVER, NodeKind.ATTACKER, NodeKind.ROUTER,
+    )
 
     iface_by_id = {i.id: i for i in interfaces}
     attached: list[str] = []

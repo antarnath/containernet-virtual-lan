@@ -24,11 +24,15 @@ Endpoints (see phases/milestone-4/phase_m4-01 §1.3 for the full list)
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import get_session
+from app.models import AnomalyEvent, NodeKind
+from app.services import anomaly_detector, project_lifecycle, project_service, router_proxy
 
 log = logging.getLogger(__name__)
 from app.schemas.project import (
@@ -528,6 +532,131 @@ async def get_project_state(
         return await project_lifecycle.project_state(session, project_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ─── Phase 03 — per-node live state + anomalies ──────────────────────
+
+@router.get("/{project_id}/nodes/{node_id}/state")
+async def get_node_state(
+    project_id: str,
+    node_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Live state for a single node.
+
+    For a router, returns the cached or freshly-fetched routes /
+    neigh / ifaces from the router agent (router_proxy). Also
+    returns the list of open anomalies for the node.
+
+    For a host / server / attacker, returns the container status
+    (and any open anomalies). Phase 05 will add CPU / memory.
+
+    For a switch, returns the container status (no live data in v1).
+    """
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    node = await project_service.get_node(session, project_id, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="node not found")
+
+    kind = node.kind.value if hasattr(node.kind, "value") else node.kind
+
+    # Anomalies (open + recent resolved) for this node.
+    stmt = (
+        select(AnomalyEvent)
+        .where(AnomalyEvent.project_id == project_id)
+        .where(AnomalyEvent.node_id == node_id)
+        .order_by(AnomalyEvent.created_at.desc())
+        .limit(50)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    anomalies = [
+        {
+            "id": r.id,
+            "kind": r.kind,
+            "severity": r.severity,
+            "summary": r.summary,
+            "detail": r.detail,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+        }
+        for r in rows
+    ]
+
+    out: dict = {
+        "node_id": node.id,
+        "name": node.name,
+        "kind": kind,
+        "container_id": node.container_id,
+        "container_status": node.container_status,
+        "anomalies": anomalies,
+    }
+
+    if kind == NodeKind.ROUTER.value and node.container_id:
+        state = await router_proxy.get_router_state(node.id, node.container_id)
+        out["router"] = state.to_dict()
+    else:
+        out["router"] = None
+
+    return out
+
+
+@router.get("/{project_id}/anomalies")
+async def list_anomalies(
+    project_id: str,
+    include_resolved: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """List anomalies for a project. By default, only open (un-resolved)."""
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    stmt = select(AnomalyEvent).where(AnomalyEvent.project_id == project_id)
+    if not include_resolved:
+        stmt = stmt.where(AnomalyEvent.resolved_at.is_(None))
+    stmt = stmt.order_by(AnomalyEvent.created_at.desc()).limit(200)
+    rows = (await session.execute(stmt)).scalars().all()
+    return {
+        "project_id": project_id,
+        "anomalies": [
+            {
+                "id": r.id,
+                "node_id": r.node_id,
+                "kind": r.kind,
+                "severity": r.severity,
+                "summary": r.summary,
+                "detail": r.detail,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/{project_id}/anomalies/{anomaly_id}/dismiss")
+async def dismiss_anomaly(
+    project_id: str,
+    anomaly_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Mark an anomaly as resolved. The underlying state change
+    remains in the DB (for the logs view in phase 07) but the
+    banner / canvas highlight disappears."""
+    ev = (await session.execute(
+        select(AnomalyEvent).where(
+            AnomalyEvent.id == anomaly_id,
+            AnomalyEvent.project_id == project_id,
+        )
+    )).scalars().first()
+    if ev is None:
+        raise HTTPException(status_code=404, detail="anomaly not found")
+    if ev.resolved_at is None:
+        ev.resolved_at = datetime.now(timezone.utc)
+        await session.commit()
+    return {"id": ev.id, "resolved_at": ev.resolved_at.isoformat()}
 
 
 # ─── helpers ──────────────────────────────────────────────────────────

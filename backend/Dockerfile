@@ -17,6 +17,7 @@ COPY wait-for-db.sh /usr/local/bin/wait-for-db.sh
 RUN chmod +x /usr/local/bin/wait-for-db.sh
 
 COPY app ./app
+COPY tests ./tests
 
 EXPOSE 8000
 CMD ["wait-for-db.sh", "db", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

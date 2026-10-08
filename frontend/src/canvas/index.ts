@@ -11,6 +11,7 @@
 //                                  maps. Exported only for tests.
 
 export { Canvas, default } from './Canvas';
+export type { OpenNodePayload } from './Canvas';
 export { Toolbox, DRAG_MIME } from './Toolbox';
 export { CanvasNode, type CanvasNodeData } from './CanvasNode';
 export { CanvasEdge, type CanvasEdgeData } from './CanvasWire';

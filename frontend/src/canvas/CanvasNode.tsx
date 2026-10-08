@@ -7,6 +7,11 @@
 // The whole card picks its color from the node-kind palette
 // (`text-node-host` etc.); selection, hover, and dragging add extra
 // rings/shadows via the design-system tokens.
+//
+// Phase 03: a node with an open anomaly gets a 1.5px `warn` outline
+// (per design-system §6.7). The Canvas owns a Set<nodeId> of "anomalous"
+// nodes, computed from the realtime store, and stamps it into the
+// node's data so this component is pure.
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from 'reactflow';
@@ -20,6 +25,8 @@ export interface CanvasNodeData {
   container_status: ContainerStatus;
   attack_mode: string | null;
   interfaces: ProjectInterface[];
+  /** Phase 03: this node has an open anomaly. */
+  has_anomaly?: boolean;
 }
 
 // Map a kind to the design-system text class for the silhouette.
@@ -41,16 +48,23 @@ const STATUS_TONE: Record<ContainerStatus, 'idle' | 'starting' | 'running' | 'er
 };
 
 function CanvasNodeImpl({ data, selected }: NodeProps<CanvasNodeData>) {
-  const { kind, name, container_status, attack_mode, interfaces } = data;
+  const { kind, name, container_status, attack_mode, interfaces, has_anomaly } = data;
+  const anomaly = !!has_anomaly;
+
+  // Border + outline priority: selected > anomaly > hover. The
+  // anomaly state is sticky and survives selection.
+  const borderClass = selected
+    ? 'border-accent shadow-glow-accent'
+    : anomaly
+    ? 'border-warn'
+    : 'border-border hover:border-border-strong shadow-md';
 
   return (
     <div
       className={[
         'min-w-[180px] rounded-lg overflow-hidden',
-        'bg-bg-surface border transition-shadow duration-fast',
-        selected
-          ? 'border-accent shadow-glow-accent'
-          : 'border-border hover:border-border-strong shadow-md',
+        'bg-bg-surface border-2 transition-shadow duration-fast',
+        borderClass,
       ].join(' ')}
     >
       {/* Top: icon + name + status pill */}

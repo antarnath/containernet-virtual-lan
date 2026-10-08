@@ -29,6 +29,8 @@ export type StatusTone =
   | 'error'
   | 'info'
   | 'accent'
+  | 'warn'
+  | 'danger'
   | 'host'
   | 'switch'
   | 'router'
@@ -70,6 +72,8 @@ const TONE: Record<StatusTone, ToneStyle> = {
   error:    { text: 'text-danger',           bg: 'bg-danger-soft',  border: 'border-danger/40',    dot: 'bg-danger' },
   info:     { text: 'text-info',             bg: 'bg-info-soft',    border: 'border-info/40',      dot: 'bg-info' },
   accent:   { text: 'text-accent',           bg: 'bg-accent-soft',  border: 'border-accent/40',    dot: 'bg-accent' },
+  warn:     { text: 'text-warn',             bg: 'bg-warn-soft',    border: 'border-warn/40',      dot: 'bg-warn' },
+  danger:   { text: 'text-danger',           bg: 'bg-danger-soft',  border: 'border-danger/40',    dot: 'bg-danger' },
 
   // node-kind palette
   host:     { text: 'text-node-host',        bg: 'bg-node-host/10', border: 'border-node-host/40', dot: 'bg-node-host' },

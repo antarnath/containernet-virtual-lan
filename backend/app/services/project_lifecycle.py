@@ -43,7 +43,7 @@ from app.models import (
     ProjectNode,
     ProjectStatus,
 )
-from app.services import container_service, link_service, node_service
+from app.services import anomaly_detector, container_service, link_service, node_service
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +144,8 @@ async def start_project(
     project.status = ProjectStatus.RUNNING
     await session.commit()
     result.status = "running"
+    # M4 phase 03 — start polling routers for ARP anomalies.
+    anomaly_detector.start_polling(project.id)
     return result
 
 
@@ -194,6 +196,8 @@ async def stop_project(
     project.status = ProjectStatus.STOPPED
     await session.commit()
     result.status = "stopped"
+    # M4 phase 03 — stop the anomaly poller; the routers are gone.
+    anomaly_detector.stop_polling(project.id)
     return result
 
 

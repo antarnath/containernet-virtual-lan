@@ -4,6 +4,8 @@
 //   • drag-end (position) → updateNode (debounced 300ms)
 //   • pan/zoom → setViewport (debounced 600ms)
 //   • selection / deletion (delete / backspace on a node or edge)
+//   • click-to-open — clicking a router node fires `onOpenNode` so
+//     the parent can mount the RouterPanel (phase 03)
 //
 // All CRUD goes through the project store. The store is the single
 // source of truth; React Flow's internal node state is derived from
@@ -41,6 +43,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import { useProjectStore } from '../store/projectStore';
+import { useRealtimeStore } from '../store/realtimeStore';
 import { toast } from '../components/ui';
 import type {
   AttackMode,
@@ -56,9 +59,19 @@ import { Toolbox, DRAG_MIME } from './Toolbox';
 const NODE_TYPES = { canvasNode: CanvasNode };
 const EDGE_TYPES = { canvasEdge: CanvasEdge };
 
+export interface OpenNodePayload {
+  nodeId: string;
+  nodeName: string;
+  nodeKind: NodeKind;
+  containerStatus: string;
+}
+
 // ─── conversion helpers ─────────────────────────────────────────────────
 
-function nodeToFlow(n: ProjectNode): Node<CanvasNodeData> {
+function nodeToFlow(
+  n: ProjectNode,
+  hasAnomaly: boolean,
+): Node<CanvasNodeData> {
   return {
     id: n.id,
     type: 'canvasNode',
@@ -69,6 +82,7 @@ function nodeToFlow(n: ProjectNode): Node<CanvasNodeData> {
       container_status: n.container_status,
       attack_mode: n.attack_mode,
       interfaces: n.interfaces,
+      has_anomaly: hasAnomaly,
     },
   };
 }
@@ -101,7 +115,13 @@ function randomCanvasPosition(): { canvas_x: number; canvas_y: number } {
 
 // ─── Main component (inside provider) ───────────────────────────────────
 
-function CanvasInner({ projectId }: { projectId: string }) {
+function CanvasInner({
+  projectId,
+  onOpenNode,
+}: {
+  projectId: string;
+  onOpenNode?: (p: OpenNodePayload) => void;
+}) {
   const current = useProjectStore((s) => s.current);
   const fetchProject = useProjectStore((s) => s.fetchProject);
   const addNode = useProjectStore((s) => s.addNode);
@@ -110,6 +130,20 @@ function CanvasInner({ projectId }: { projectId: string }) {
   const deleteNode = useProjectStore((s) => s.deleteNode);
   const deleteLink = useProjectStore((s) => s.deleteLink);
   const setViewport = useProjectStore((s) => s.setViewport);
+  // Phase 03: the set of nodes with an open anomaly, so the canvas
+  // can outline them. Subscribing to `anomalies` here is what
+  // re-renders the affected nodes when the WS delivers a new event.
+  const anomalies = useRealtimeStore((s) => s.anomalies);
+  const dismissedIds = useRealtimeStore((s) => s.dismissedIds);
+  const anomalousNodeIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of anomalies) {
+      if (a.resolved_at) continue;
+      if (dismissedIds.has(a.id)) continue;
+      if (a.node_id) s.add(a.node_id);
+    }
+    return s;
+  }, [anomalies, dismissedIds]);
 
   // Local mirror of the React Flow node/edge state. We seed it from
   // `current` whenever the server's view of the world changes
@@ -118,13 +152,14 @@ function CanvasInner({ projectId }: { projectId: string }) {
   const [edges, setEdges] = useState<Edge<CanvasEdgeData>[]>([]);
 
   // Hydrate from the project store on first mount + whenever the
-  // server-side state changes.
+  // server-side state changes. Also re-runs when the anomaly set
+  // changes so the warn outline appears/disappears in real time.
   useEffect(() => {
     if (!current) return;
     if (current.id !== projectId) return;
-    setNodes(current.nodes.map(nodeToFlow));
+    setNodes(current.nodes.map((n) => nodeToFlow(n, anomalousNodeIds.has(n.id))));
     setEdges(current.links.map(linkToFlow));
-  }, [current, projectId]);
+  }, [current, projectId, anomalousNodeIds]);
 
   // If the project is missing on first mount, fetch it.
   useEffect(() => {
@@ -252,15 +287,23 @@ function CanvasInner({ projectId }: { projectId: string }) {
     [addLink, projectId],
   );
 
-  // ─── click to delete a node (Backspace/Delete key) ───────────
+  // ─── click to open a node's panel (phase 03: routers only) ────
   const onNodeClick: NodeMouseHandler = useCallback(
     (_e, node) => {
-      // Phase 01 keeps the deletion flow simple: double-click deletes.
-      // Single click just selects (React Flow default). Backspace is
-      // handled below in the keyboard effect.
-      void node;
+      if (!onOpenNode) return;
+      const data = node.data as CanvasNodeData | undefined;
+      if (!data) return;
+      // Phase 03 only mounts the RouterPanel. Other node kinds get
+      // a one-row panel later (phases 05/06) so we no-op for them.
+      if (data.kind !== 'router') return;
+      onOpenNode({
+        nodeId: node.id,
+        nodeName: data.name,
+        nodeKind: data.kind,
+        containerStatus: data.container_status,
+      });
     },
-    [],
+    [onOpenNode],
   );
 
   // Debounced viewport save.
@@ -413,7 +456,7 @@ function CanvasInner({ projectId }: { projectId: string }) {
 
 // ─── Public component (wraps the provider so RF hooks work) ─────────────
 
-export function Canvas(props: { projectId: string }) {
+export function Canvas(props: { projectId: string; onOpenNode?: (p: OpenNodePayload) => void }) {
   return (
     <ReactFlowProvider>
       <CanvasInner {...props} />

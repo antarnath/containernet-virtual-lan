@@ -18,3 +18,9 @@ export { EmptyState } from './EmptyState';
 export { LoadingSkeleton } from './LoadingSkeleton';
 export { Toaster, toast, useToastStore } from './Toast';
 export type { ToastKind, ToastItem } from './Toast';
+
+export { Table } from './Table';
+export type { TableColumn, TableProps } from './Table';
+
+export { AnomalyBanner } from './AnomalyBanner';
+export type { AnomalyBannerProps } from './AnomalyBanner';
