@@ -22,6 +22,21 @@ class Settings(BaseSettings):
     # to a socket-proxy URL like tcp://docker-proxy:2375.
     DOCKER_HOST: str = "unix:///var/run/docker.sock"
 
+    # M4 phase 02 — the name of the backend's Docker network. Spawned
+    # project nodes attach to this network in addition to their
+    # per-wire bridges, so they can DNS-resolve ``backend`` for
+    # heartbeats. The default is the docker-compose network name
+    # (``<project_dir>_containernet_lan``); override via the
+    # BACKEND_NETWORK env var if your compose project has a
+    # different prefix (e.g. set to ``containernet_lan`` for a
+    # compose project named ``default``).
+    BACKEND_NETWORK: str = "containernet_containernet_lan"
+
+    # M4 phase 02 — the URL host agents POST heartbeats to. Used as
+    # the ``BACKEND_URL`` env var on every spawned host/server/attacker
+    # container.
+    BACKEND_URL: str = "http://backend:8000"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

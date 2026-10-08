@@ -1,23 +1,24 @@
 // Thin Axios wrapper. The base URL is "/api" — both Vite (dev) and
 // Nginx (prod) forward /api/* to the backend container.
+//
+// M4 — 5-primitive model. The ProjectsAPI exposes the full canvas
+// surface: project CRUD, node CRUD, interface CRUD, link CRUD.
 
 import axios from 'axios';
 import type {
-  Communication,
-  CommunicationCreate,
-  CommunicationListResponse,
-  HostListResponse,
-  MessageListResponse,
-  MessageRecord,
-  NodePosition,
   Project,
   ProjectCreate,
   ProjectDetail,
-  ProjectHost,
-  ProjectHostListResponse,
+  ProjectInterface,
+  ProjectInterfaceCreate,
+  ProjectInterfaceUpdate,
+  ProjectLink,
+  ProjectLinkCreate,
   ProjectListResponse,
-  StatsSummary,
-  TopologyResponse,
+  ProjectNode,
+  ProjectNodeCreate,
+  ProjectNodeUpdate,
+  ProjectUpdate,
 } from '../types';
 
 const api = axios.create({
@@ -26,30 +27,8 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-export const HostsAPI = {
-  /** Legacy flat list across every project. Deprecated — use ProjectsAPI.hosts.list. */
-  list: async (): Promise<HostListResponse> => {
-    const { data } = await api.get<HostListResponse>('/hosts');
-    return data;
-  },
-};
-
-export const TopologyAPI = {
-  get: async (): Promise<TopologyResponse> => {
-    const { data } = await api.get<TopologyResponse>('/topology');
-    return data;
-  },
-};
-
-export const CommunicationsAPI = {
-  /** Legacy flat list across every project. Deprecated — use ProjectsAPI.communications.list. */
-  list: async (): Promise<CommunicationListResponse> => {
-    const { data } = await api.get<CommunicationListResponse>('/communications');
-    return data;
-  },
-};
-
 export const ProjectsAPI = {
+  // ─── Project CRUD ────────────────────────────────────────────────
   list: async (): Promise<ProjectListResponse> => {
     const { data } = await api.get<ProjectListResponse>('/projects');
     return data;
@@ -62,6 +41,22 @@ export const ProjectsAPI = {
     const { data } = await api.post<ProjectDetail>('/projects', body);
     return data;
   },
+  update: async (
+    projectId: string,
+    body: ProjectUpdate,
+  ): Promise<Project> => {
+    const { data } = await api.patch<Project>(`/projects/${projectId}`, body);
+    return data;
+  },
+  delete: async (projectId: string): Promise<void> => {
+    await api.delete(`/projects/${projectId}`);
+  },
+
+  // ─── Lifecycle (phase 02) ────────────────────────────────────────
+  // start, stop, restart all return the updated ProjectDetail
+  // (project + nodes + links) so the canvas can refresh its state
+  // in one round-trip. `state` is a lighter-weight snapshot used
+  // for the status pills and error toasts.
   start: async (projectId: string): Promise<ProjectDetail> => {
     const { data } = await api.post<ProjectDetail>(`/projects/${projectId}/start`);
     return data;
@@ -70,149 +65,135 @@ export const ProjectsAPI = {
     const { data } = await api.post<ProjectDetail>(`/projects/${projectId}/stop`);
     return data;
   },
-  delete: async (projectId: string): Promise<void> => {
-    await api.delete(`/projects/${projectId}`);
-  },
-  updateNodePosition: async (
-    projectId: string,
-    hostId: string,
-    body: NodePosition,
-  ): Promise<ProjectHost> => {
-    const { data } = await api.patch<ProjectHost>(
-      `/projects/${projectId}/nodes/${hostId}`,
-      body,
-    );
+  restart: async (projectId: string): Promise<ProjectDetail> => {
+    const { data } = await api.post<ProjectDetail>(`/projects/${projectId}/restart`);
     return data;
   },
-  // ─── per-project hosts (Phase 05) ──────────────────────────────────────
-  hosts: {
-    list: async (projectId: string): Promise<ProjectHostListResponse> => {
-      const { data } = await api.get<ProjectHostListResponse>(
-        `/projects/${projectId}/hosts`,
-      );
-      return data;
-    },
-    get: async (projectId: string, hostId: string): Promise<ProjectHost> => {
-      const { data } = await api.get<ProjectHost>(
-        `/projects/${projectId}/hosts/${hostId}`,
-      );
-      return data;
-    },
-    metricsText: async (
-      projectId: string,
-      hostId: string,
-    ): Promise<string> => {
-      // We can't use api.get<…>() because the response body is plain text
-      // (Prometheus format), not JSON. Issue a raw request via Axios and
-      // return the text body.
-      const { data } = await api.get<string>(
-        `/projects/${projectId}/hosts/${hostId}/metrics`,
-        { responseType: 'text', transformResponse: [(d) => d] },
-      );
-      return data;
-    },
+  state: async (
+    projectId: string,
+  ): Promise<{
+    project_id: string;
+    status: string;
+    nodes: Array<{
+      id: string;
+      name: string;
+      kind: string;
+      container_id: string | null;
+      container_status: string;
+      container: {
+        id: string;
+        name: string;
+        status: string;
+        image: string;
+      } | null;
+    }>;
+    links: Array<{
+      id: string;
+      iface_a_id: string;
+      iface_b_id: string;
+      docker_bridge_name: string | null;
+      bridge: {
+        network_id: string;
+        name: string;
+        short_name: string;
+        subnet_cidr: string;
+      } | null;
+    }>;
+  }> => {
+    const { data } = await api.get(`/projects/${projectId}/state`);
+    return data;
   },
-  // ─── per-project communications (Phase 06) ────────────────────────────
-  communications: {
-    list: async (
+
+  // ─── Node CRUD ──────────────────────────────────────────────────
+  nodes: {
+    create: async (
       projectId: string,
-      limit = 100,
-    ): Promise<CommunicationListResponse> => {
-      const { data } = await api.get<CommunicationListResponse>(
-        `/projects/${projectId}/communications`,
-        { params: { limit } },
+      body: ProjectNodeCreate,
+    ): Promise<ProjectNode> => {
+      const { data } = await api.post<ProjectNode>(
+        `/projects/${projectId}/nodes`,
+        body,
       );
       return data;
     },
     get: async (
       projectId: string,
-      commId: string,
-    ): Promise<Communication> => {
-      const { data } = await api.get<Communication>(
-        `/projects/${projectId}/communications/${commId}`,
+      nodeId: string,
+    ): Promise<ProjectNode> => {
+      const { data } = await api.get<ProjectNode>(
+        `/projects/${projectId}/nodes/${nodeId}`,
       );
       return data;
     },
-    trigger: async (
+    update: async (
       projectId: string,
-      body: CommunicationCreate,
-    ): Promise<Communication> => {
-      const { data } = await api.post<Communication>(
-        `/projects/${projectId}/communications`,
+      nodeId: string,
+      body: ProjectNodeUpdate,
+    ): Promise<ProjectNode> => {
+      const { data } = await api.patch<ProjectNode>(
+        `/projects/${projectId}/nodes/${nodeId}`,
         body,
       );
       return data;
     },
-  },
-  // ─── per-project per-host messages (Phase 08) ────────────────────────
-  messages: {
-    list: async (
+    delete: async (
       projectId: string,
-      hostId: string,
-      limit = 100,
-    ): Promise<MessageListResponse> => {
-      const { data } = await api.get<MessageListResponse>(
-        `/projects/${projectId}/hosts/${hostId}/messages`,
-        { params: { limit } },
-      );
-      return data;
-    },
-    listProject: async (
-      projectId: string,
-      limit = 500,
-    ): Promise<MessageListResponse> => {
-      const { data } = await api.get<MessageListResponse>(
-        `/projects/${projectId}/messages`,
-        { params: { limit } },
-      );
-      return data;
-    },
-    clearProject: async (
-      projectId: string,
-    ): Promise<{ project_id: string; removed: number }> => {
-      const { data } = await api.delete<{ project_id: string; removed: number }>(
-        `/projects/${projectId}/messages`,
-      );
-      return data;
+      nodeId: string,
+    ): Promise<void> => {
+      await api.delete(`/projects/${projectId}/nodes/${nodeId}`);
     },
   },
-};
 
-export const MessagesAPI = {
-  // Convenience re-export — some components prefer to import MessagesAPI
-  // directly rather than reaching through ProjectsAPI.messages.
-  list: (projectId: string, hostId: string, limit = 100) =>
-    ProjectsAPI.messages.list(projectId, hostId, limit),
-  listProject: (projectId: string, limit = 500) =>
-    ProjectsAPI.messages.listProject(projectId, limit),
-  clearProject: (projectId: string) =>
-    ProjectsAPI.messages.clearProject(projectId),
-  ingest: async (
-    projectId: string,
-    hostId: string,
-    body: {
-      direction: 'in' | 'out';
-      comm_id?: string | null;
-      peer_host_id?: string | null;
-      payload: string;
-      protocol?: string;
+  // ─── Interface CRUD ─────────────────────────────────────────────
+  interfaces: {
+    create: async (
+      projectId: string,
+      nodeId: string,
+      body: ProjectInterfaceCreate,
+    ): Promise<ProjectInterface> => {
+      const { data } = await api.post<ProjectInterface>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces`,
+        body,
+      );
+      return data;
     },
-  ): Promise<MessageRecord> => {
-    const { data } = await api.post<MessageRecord>(
-      `/projects/${projectId}/hosts/${hostId}/messages`,
-      body,
-    );
-    return data;
+    update: async (
+      projectId: string,
+      ifaceId: string,
+      body: ProjectInterfaceUpdate,
+    ): Promise<ProjectInterface> => {
+      const { data } = await api.patch<ProjectInterface>(
+        `/projects/${projectId}/interfaces/${ifaceId}`,
+        body,
+      );
+      return data;
+    },
+    delete: async (
+      projectId: string,
+      ifaceId: string,
+    ): Promise<void> => {
+      await api.delete(`/projects/${projectId}/interfaces/${ifaceId}`);
+    },
   },
-};
 
-export const StatsAPI = {
-  /** Platform-wide summary used by the Overview dashboard. */
-  summary: async (limitRecent = 20): Promise<StatsSummary> => {
-    const { data } = await api.get<StatsSummary>('/stats/summary', {
-      params: { limit_recent: limitRecent },
-    });
-    return data;
+  // ─── Link CRUD ─────────────────────────────────────────────────
+  links: {
+    create: async (
+      projectId: string,
+      body: ProjectLinkCreate,
+    ): Promise<ProjectLink> => {
+      const { data } = await api.post<ProjectLink>(
+        `/projects/${projectId}/links`,
+        body,
+      );
+      return data;
+    },
+    delete: async (
+      projectId: string,
+      linkId: string,
+    ): Promise<void> => {
+      await api.delete(`/projects/${projectId}/links/${linkId}`);
+    },
   },
 };
 

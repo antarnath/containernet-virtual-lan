@@ -1,19 +1,19 @@
+# M4 phase 02: project_lifecycle (start/stop/restart) and link_service
+# (per-wire bridge management) are exported alongside project_service
+# and container_service. node_service is imported lazily by lifecycle.
+
 from . import (
-    communication_service,
     container_service,
-    host_service,
-    network_service,
-    orphan_service,
+    link_service,
+    node_service,
+    project_lifecycle,
     project_service,
-    topology_generator,
 )
 
 __all__ = [
-    "communication_service",
     "container_service",
-    "host_service",
-    "network_service",
-    "orphan_service",
+    "link_service",
+    "node_service",
+    "project_lifecycle",
     "project_service",
-    "topology_generator",
 ]

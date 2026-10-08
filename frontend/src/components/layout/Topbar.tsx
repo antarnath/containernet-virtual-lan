@@ -1,53 +1,20 @@
-// Top header bar — shows the online count + a "Live"/"Reconnecting" badge.
-
-import { useHostStore } from '../../store/hostStore';
-import { useRealtimeStore } from '../../store/realtimeStore';
+// Top header bar — M4 phase 01.
+//
+// Shows the app context on the left ("ContainerNet · virtual lab")
+// and the system health on the right. Phase 01 has no live WS feed,
+// so the right side just shows a static "Editor" mode badge; later
+// phases (05+) will replace this with a real WebSocket status
+// indicator and a per-project live event counter.
 
 export default function Topbar() {
-  const hosts = useHostStore((s) => s.hosts);
-  const wsStatus = useRealtimeStore((s) => s.wsStatus);
-  const online = hosts?.online ?? 0;
-  const total = hosts?.total ?? 0;
-
-  const dot =
-    wsStatus === 'open'
-      ? 'bg-online'
-      : wsStatus === 'connecting'
-      ? 'bg-unknown'
-      : 'bg-offline';
-  const label =
-    wsStatus === 'open' ? 'Live' : wsStatus === 'connecting' ? 'Connecting' : 'Offline';
-
   return (
-    <header className="h-14 bg-panel border-b border-border flex items-center justify-between px-6">
-      <div className="text-sm text-muted">
-        Container-based Virtual LAN — live status
+    <header className="h-12 bg-bg-surface border-b border-border flex items-center justify-between px-6 flex-shrink-0">
+      <div className="text-2xs uppercase tracking-wider text-text-muted">
+        Virtual network lab
       </div>
-
-      <div className="flex items-center gap-6 text-sm">
-        {/* WS status */}
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-2.5 w-2.5">
-            {wsStatus === 'open' && (
-              <span className="animate-pulse-dot absolute inline-flex h-full w-full rounded-full bg-online opacity-75"></span>
-            )}
-            <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${dot}`}></span>
-          </span>
-          <span className="text-xs uppercase tracking-wider text-muted">
-            {label}
-          </span>
-        </div>
-
-        {/* Host count */}
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-3 w-3">
-            <span className="animate-pulse-dot absolute inline-flex h-full w-full rounded-full bg-online opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-3 w-3 bg-online"></span>
-          </span>
-          <span className="text-text font-medium">
-            {online} / {total} hosts online
-          </span>
-        </div>
+      <div className="flex items-center gap-2 text-2xs uppercase tracking-wider text-text-muted">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-success animate-pulse-dot" />
+        <span>Editor mode</span>
       </div>
     </header>
   );

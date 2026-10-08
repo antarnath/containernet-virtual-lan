@@ -1,14 +1,16 @@
-"""Project ORM model — represents a user-created virtual LAN.
+"""Project ORM model — represents a user-built virtual network.
 
-A project is the unit of work in ContainerNet. It owns:
-  * a topology (mesh / star / ring / bus / tree)
-  * a fixed host count (decided at creation)
-  * a fixed subnet (also decided at creation)
-  * a set of ProjectHost rows (one per virtual machine in the LAN)
-  * a set of ProjectEdge rows (one per link in the topology graph)
+M4 — the project is the canvas. It owns:
+  * a set of ``ProjectNode`` rows (5 device kinds)
+  * a set of ``ProjectLink`` rows (one per wire)
+  * the canvas viewport state (for pan/zoom restore)
+  * a lifecycle status (draft / starting / running / partial / stopped / error)
 
-Phase 2 only persists the topology graph. Phase 03 will spawn the actual
-Docker containers and update ``container_id`` on the ProjectHost rows.
+The M2 fields ``topology_type``, ``host_count``, ``subnet``, and
+``gateway`` are **removed**: there are no templates in M4 and the
+user types IPs on every interface individually. The M2 fields are
+preserved as nullable columns during the M4 migration so any pre-M4
+data doesn't crash, but the API no longer reads or writes them.
 """
 
 from __future__ import annotations
@@ -16,19 +18,26 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum as SAEnum, Integer, String
+from sqlalchemy import DateTime, Enum as SAEnum, Float, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.host import Base
 
+if TYPE_CHECKING:
+    from app.models.project_node import ProjectNode
+    from app.models.project_link import ProjectLink
+
 
 class ProjectStatus(str, enum.Enum):
     """Lifecycle of a project."""
-    DRAFT = "draft"           # topology persisted, no containers yet
-    RUNNING = "running"       # all containers up
-    PARTIAL = "partial"       # some containers up, some down
-    STOPPED = "stopped"       # containers stopped, project still in DB
+    DRAFT = "draft"            # canvas persisted, no containers yet
+    STARTING = "starting"      # phase 02: spawn in progress
+    RUNNING = "running"        # all containers up
+    PARTIAL = "partial"        # some containers up, some down
+    STOPPED = "stopped"        # containers stopped, project still in DB
+    ERROR = "error"            # last start failed; see logs
 
 
 class Project(Base):
@@ -38,14 +47,34 @@ class Project(Base):
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     name: Mapped[str] = mapped_column(String(100))
-    topology_type: Mapped[str] = mapped_column(String(20))
-    host_count: Mapped[int] = mapped_column(Integer)
-    subnet: Mapped[str] = mapped_column(String(20))   # e.g. "10.20.0.0/24"
-    gateway: Mapped[str] = mapped_column(String(45))  # e.g. "10.20.0.1"
+
+    # ── M2 fields kept nullable for forward compatibility ──────────────
+    # New code MUST NOT read or write these. They exist only so the
+    # ``_PATCHES`` in core/database.py can drop the old M2 model
+    # without crashing on legacy rows.
+    topology_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    host_count: Mapped[int | None] = mapped_column(nullable=True)
+    subnet: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    gateway: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
     status: Mapped[str] = mapped_column(
-        SAEnum(ProjectStatus, name="project_status"),
+        # ProjectStatus is a str enum (lowercase values: "draft",
+        # "starting", …). We must tell SQLAlchemy to write the *value*
+        # (lowercase) rather than the default *name* (UPPERCASE) — the
+        # PG enum was created with the lowercase values.
+        SAEnum(
+            ProjectStatus,
+            name="project_status",
+            values_callable=lambda e: [m.value for m in e],
+        ),
         default=ProjectStatus.DRAFT,
     )
+
+    # ── canvas viewport (pan/zoom state, restored on reopen) ──────────
+    viewport_x: Mapped[float] = mapped_column(Float, default=0.0)
+    viewport_y: Mapped[float] = mapped_column(Float, default=0.0)
+    viewport_zoom: Mapped[float] = mapped_column(Float, default=1.0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
@@ -56,20 +85,24 @@ class Project(Base):
     )
 
     # ── relationships ──────────────────────────────────────────────────
-    # cascade="all, delete-orphan" ensures that deleting a project removes
-    # all its hosts and edges in the same transaction. This is enforced at
-    # the FK level too (ondelete="CASCADE") so raw SQL deletes work.
-    hosts: Mapped[list["ProjectHost"]] = relationship(  # noqa: F821
+    # cascade="all, delete-orphan" ensures deleting a project removes
+    # all its nodes (and through them, all interfaces + links) in one
+    # transaction. Enforced at the FK level too (ondelete="CASCADE").
+    nodes: Mapped[list["ProjectNode"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
+        order_by="ProjectNode.created_at",
     )
-    edges: Mapped[list["ProjectEdge"]] = relationship(  # noqa: F821
+    links: Mapped[list["ProjectLink"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
+        order_by="ProjectLink.created_at",
     )
 
     def __repr__(self) -> str:
+        n_nodes = len(self.nodes) if self.nodes else 0
+        n_links = len(self.links) if self.links else 0
         return (
-            f"<Project {self.name} {self.topology_type} "
-            f"hosts={self.host_count} subnet={self.subnet} status={self.status}>"
+            f"<Project {self.name} status={self.status} "
+            f"nodes={n_nodes} links={n_links}>"
         )

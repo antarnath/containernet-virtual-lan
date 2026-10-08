@@ -43,6 +43,9 @@ services:
       # the host-agent folder here so edits are picked up by freshly-spawned
       # hosts without rebuilding the host-base image.
       - ./host-agent:/app/host-agent:ro
+      # M4 phase 02 — the spawned router agents read /app/router-agent at
+      # runtime. Same live-edit pattern as host-agent.
+      - ./router-agent:/app/router-agent:ro
     # M2-07 §2.4 — per-project capture container requires the backend to
     # toggle the bridge's per-port promiscuous flag so host→host unicast
     # frames get flooded to the capture container's port. Without
@@ -82,6 +85,42 @@ services:
       context: .
       dockerfile: infra/hosts/capture-base.Dockerfile
     image: containernet-capture-base:latest
+
+  # ─── SWITCH BASE IMAGE (M4 phase 02) ──────────────────────────
+  # A no-op container used as a debuggable namespace + veth anchor
+  # for each switch node the user draws. The actual L2 forwarding
+  # happens on the per-wire Linux bridge the backend creates.
+  switch-base:
+    build:
+      context: .
+      dockerfile: infra/hosts/switch-base.Dockerfile
+    image: containernet-switch-base:latest
+    networks:
+      containernet_lan:
+        aliases:
+          - switch-base
+
+  # ─── ROUTER BASE IMAGE (M4 phase 02) ──────────────────────────
+  # A small Linux container with IP forwarding enabled and a tiny
+  # HTTP router-agent on :9090. The backend spawns one of these
+  # per router node, attached to one Linux bridge per wire the
+  # user drew from the router.
+  router-base:
+    build:
+      context: .
+      dockerfile: infra/hosts/router-base.Dockerfile
+    image: containernet-router-base:latest
+    # M4 phase 02 — the router needs IP forwarding enabled at the
+    # kernel level. The image's entrypoint also sets this as a
+    # belt-and-braces measure.
+    sysctls:
+      - net.ipv4.ip_forward=1
+    cap_add:
+      - NET_ADMIN
+    networks:
+      containernet_lan:
+        aliases:
+          - router-base
 
   # ─── FRONTEND (React + Nginx) ────────────────────────────
   frontend:

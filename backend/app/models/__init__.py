@@ -3,21 +3,35 @@
 Note: every new model must be imported here BEFORE ``init_db`` is called,
 or SQLAlchemy won't know about its table when ``Base.metadata.create_all``
 runs on backend startup.
+
+M4 model surface (5-primitive):
+  * Project
+  * ProjectNode (kind ∈ {host, switch, router, server, attacker})
+  * ProjectInterface
+  * ProjectLink
+  * ProjectCapture
+
+The legacy ``Host`` model is kept so any code path that still imports
+it (none in M4) doesn't crash; it's not part of the 5-primitive model.
+The M2 ``ProjectHost`` and ``ProjectEdge`` tables are dropped at
+startup by the _PATCHES list in core/database.py.
 """
 
 from app.models.host import Base, Host, HostStatus
-from app.models.communication import Communication, CommStatus
-from app.models.message import Message, MessageDirection
 from app.models.project import Project, ProjectStatus
-from app.models.project_host import ProjectHost, ProjectHostStatus
-from app.models.project_edge import ProjectEdge
+# M4 — the 5-primitive model
+from app.models.project_node import ProjectNode, NodeKind, ATTACK_MODES
+from app.models.project_interface import ProjectInterface
+from app.models.project_link import ProjectLink
+from app.models.project_capture import ProjectCapture
 
 __all__ = [
     "Base",
-    "Host", "HostStatus",
-    "Communication", "CommStatus",
-    "Message", "MessageDirection",
+    "Host", "HostStatus",  # legacy, not used by M4
     "Project", "ProjectStatus",
-    "ProjectHost", "ProjectHostStatus",
-    "ProjectEdge",
+    # M4
+    "ProjectNode", "NodeKind", "ATTACK_MODES",
+    "ProjectInterface",
+    "ProjectLink",
+    "ProjectCapture",
 ]

@@ -43,6 +43,58 @@ _PATCHES: list[tuple[str, str]] = [
         "ALTER TABLE communications DROP CONSTRAINT IF EXISTS communications_dest_host_id_fkey",
         "drop legacy communications.dest_host_id FK",
     ),
+    # ─── M4: drop the M2 flat-topology tables ─────────────────────────
+    # The M2 model had ``project_hosts`` (one row per host) and
+    # ``project_edges`` (one row per mesh link). M4 replaces them with
+    # the 5-primitive model: ``project_nodes``, ``project_interfaces``,
+    # ``project_links``, ``project_captures``. The data does not
+    # survive (no templates → no automatic migration path for an
+    # arbitrary user-drawn topology). If a user has M2 data they care
+    # about, they should have exported it before this migration ran.
+    # ``CASCADE`` drops dependent FK constraints automatically.
+    (
+        "DROP TABLE IF EXISTS project_edges CASCADE",
+        "M4: drop project_edges (M2 model)",
+    ),
+    (
+        "DROP TABLE IF EXISTS project_hosts CASCADE",
+        "M4: drop project_hosts (M2 model)",
+    ),
+    # M4 added viewport state to the projects table (canvas pan/zoom).
+    # These are new columns; the M2 projects table doesn't have them.
+    # ``ADD COLUMN IF NOT EXISTS`` is idempotent.
+    (
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS viewport_x REAL NOT NULL DEFAULT 0",
+        "M4: add projects.viewport_x",
+    ),
+    (
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS viewport_y REAL NOT NULL DEFAULT 0",
+        "M4: add projects.viewport_y",
+    ),
+    (
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS viewport_zoom REAL NOT NULL DEFAULT 1.0",
+        "M4: add projects.viewport_zoom",
+    ),
+    # The M2 model made ``topology_type``, ``host_count``, ``subnet``,
+    # and ``gateway`` NOT NULL. The M4 model leaves them NULL. The
+    # on-disk table still has the old NOT NULL constraints, which
+    # would block an INSERT. Drop the NOT NULL constraints idempotently.
+    (
+        "ALTER TABLE projects ALTER COLUMN topology_type DROP NOT NULL",
+        "M4: relax projects.topology_type NOT NULL",
+    ),
+    (
+        "ALTER TABLE projects ALTER COLUMN host_count DROP NOT NULL",
+        "M4: relax projects.host_count NOT NULL",
+    ),
+    (
+        "ALTER TABLE projects ALTER COLUMN subnet DROP NOT NULL",
+        "M4: relax projects.subnet NOT NULL",
+    ),
+    (
+        "ALTER TABLE projects ALTER COLUMN gateway DROP NOT NULL",
+        "M4: relax projects.gateway NOT NULL",
+    ),
 ]
 
 

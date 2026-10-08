@@ -28,6 +28,12 @@ LABEL_HOST = "containernet.host=true"
 # to find containers that should no longer exist (their project was deleted).
 LABEL_PROJECT = "containernet.project"
 
+# M4 phase 02 — node-scoped label: every container spawned for a node carries
+# ``containernet.node=<node_uuid>``. Used by node_service to look up a
+# container by its parent node row, and by the orphan sweeper to find
+# containers for a specific project.
+LABEL_NODE = "containernet.node"
+
 
 # ─── create ─────────────────────────────────────────────────────────────────
 

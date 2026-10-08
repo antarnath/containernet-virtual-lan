@@ -1,376 +1,559 @@
-"""Project service — orchestrates the project lifecycle.
+"""Project service — orchestrates the 5-primitive M4 model.
 
-The service is the single source of truth for what happens when a project
-is created, fetched, updated, or deleted. The API layer (api/projects.py)
-is a thin wrapper that just calls these functions.
+The service is the single source of truth for what happens when a project,
+node, interface, or link is created, fetched, updated, or deleted. The API
+layer (``api/projects.py``) is a thin wrapper that just calls these
+functions.
 
-Phase 02 responsibilities
-  * create_project — generate topology graph + persist
-  * get_project    — fetch with eager-loaded hosts + edges
-  * list_projects  — summary listing
-  * delete_project — remove (DB rows; cascade to hosts + edges)
-  * update_node_position — drag-and-drop persistence
+Phase 01 responsibilities (this file)
+  * create_project     — create the canvas (no nodes, no links)
+  * get_project        — fetch with eager-loaded nodes + links
+  * list_projects      — summary listing
+  * update_project     — name + viewport
+  * delete_project     — cascades to nodes / interfaces / links
+  * add_node           — auto-generate a sensible default name
+  * update_node        — name / position / attack_mode
+  * delete_node        — cascade; 409 if any wire would dangle
+  * add_interface      — port on a node
+  * update_interface   — IP / mask / name
+  * delete_interface   — 409 if wired
+  * add_link           — two interfaces on different nodes
+  * delete_link        — cascades to the per-link capture row
 
-Phase 03 responsibilities
-  * start_project  — create bridge + spawn containers for every host
-  * stop_project   — stop every container, keep project + DB rows
-  * delete_project — stop+remove containers, remove bridge, delete DB rows
+Phase 02 will add the lifecycle (start / stop / restart) on top of this
+same module — they slot in as additional methods without changing the
+CRUD shape.
 """
 
 from __future__ import annotations
 
-from ipaddress import IPv4Address, IPv4Network
+from typing import Any
 
-from docker import errors as docker_errors
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import (
+    ATTACK_MODES,
+    NodeKind,
     Project,
-    ProjectEdge,
-    ProjectHost,
+    ProjectCapture,
+    ProjectInterface,
+    ProjectLink,
+    ProjectNode,
     ProjectStatus,
 )
-from app.schemas.project import ProjectCreateIn
-from app.services import container_service, network_service
-from app.services.topology_generator import (
-    BadSubnetError,
-    generate_topology,
+from app.schemas.project import (
+    ProjectCreateIn,
+    ProjectInterfaceCreateIn,
+    ProjectInterfaceUpdateIn,
+    ProjectLinkCreateIn,
+    ProjectNodeCreateIn,
+    ProjectNodeUpdateIn,
+    ProjectUpdateIn,
 )
 
 
-# The backend's own Docker network. Spawned hosts are attached to this so
-# they can DNS-resolve `backend:8000` for heartbeats. Docker Compose
-# prefixes the directory name to user-defined network names, so the
-# container-level network is ``containernet_containernet_lan``.
-BACKEND_NETWORK = "containernet_containernet_lan"
+# ─── Errors ────────────────────────────────────────────────────────────────
+# These are caught by the API layer and translated to 4xx HTTP responses.
+# The strings are user-facing; keep them short and clear.
+
+class ProjectNotFoundError(LookupError):
+    """The requested project does not exist."""
 
 
-# ─── subnet allocation pool ─────────────────────────────────────────────────
-# When the user doesn't pin a subnet (or opts into auto-assignment) the
-# backend hands out the next free ``/24`` here so multiple projects can run
-# side-by-side without overlapping the Docker default bridge (172.17.0.0/16)
-# or the static demo LAN (10.10.0.0/24). The pool is private and well below
-# the reserved ranges we reject in ``topology_generator._validate_subnet``.
-ALLOCATION_POOL_START = IPv4Network("10.30.0.0/24")
-ALLOCATION_POOL_END   = IPv4Network("10.99.0.0/24")
+class NodeNotFoundError(LookupError):
+    """The requested node does not exist (or not in this project)."""
 
 
-class SubnetInUseError(ValueError):
-    """Raised when the requested subnet is already taken by another project.
+class InterfaceNotFoundError(LookupError):
+    """The requested interface does not exist (or not in this project)."""
 
-    The API layer converts this into a 409 with a clear message pointing
-    the user at the duplicate project (or at the auto-assign toggle).
+
+class LinkNotFoundError(LookupError):
+    """The requested link does not exist (or not in this project)."""
+
+
+class NodeHasLinksError(ValueError):
+    """Deleting a node that has wired interfaces."""
+    def __init__(self, node_id: str, link_ids: list[str]) -> None:
+        super().__init__(
+            f"Node {node_id!r} has {len(link_ids)} wire(s) attached; "
+            f"delete the wires first: {link_ids}"
+        )
+        self.node_id = node_id
+        self.link_ids = link_ids
+
+
+class InterfaceIsWiredError(ValueError):
+    """Deleting an interface that is on a link."""
+    def __init__(self, iface_id: str, link_ids: list[str]) -> None:
+        super().__init__(
+            f"Interface {iface_id!r} is on {len(link_ids)} wire(s); "
+            f"delete the wires first: {link_ids}"
+        )
+        self.iface_id = iface_id
+        self.link_ids = link_ids
+
+
+class LinkEndpointsError(ValueError):
+    """The two endpoints of a link are not on different nodes."""
+
+
+# ─── helpers ──────────────────────────────────────────────────────────────
+
+_NODE_KIND_LABEL = {
+    NodeKind.HOST: "Host",
+    NodeKind.SWITCH: "Switch",
+    NodeKind.ROUTER: "Router",
+    NodeKind.SERVER: "Server",
+    NodeKind.ATTACKER: "Attacker",
+}
+
+
+async def _next_node_name(
+    session: AsyncSession, project_id: str, kind: NodeKind
+) -> str:
+    """Auto-suggest a name like ``Host-3`` for a new node of ``kind``.
+
+    The counter is the count of existing nodes of that kind + 1
+    (not the max+1, so deletions don't cause name collisions). The
+    user can rename anything via PATCH afterwards.
     """
-
-
-async def _existing_subnets(session: AsyncSession) -> set[str]:
-    """Return the set of subnets already claimed by other projects.
-
-    Stored as canonical strings (e.g. ``"10.20.0.0/24"``) so they can be
-    compared with whatever ``ProjectCreateIn.subnet`` comes in as.
-    """
-    result = await session.execute(select(Project.subnet))
-    return {row[0] for row in result.all() if row[0]}
-
-
-def _next_free_subnet(used: set[str]) -> str:
-    """Return the next free /24 in :data:`ALLOCATION_POOL_START`..:data:`ALLOCATION_POOL_END`.
-
-    Raises ``SubnetInUseError`` if the pool is fully exhausted. Iteration
-    order is deterministic (lowest address first) so repeated calls hand
-    out the same subnet if no new project has claimed it.
-    """
-    start_int = int(ALLOCATION_POOL_START.network_address)
-    end_int   = int(ALLOCATION_POOL_END.network_address)
-    step      = 1 << (32 - 24)  # /24 stride = 256
-    cursor = start_int
-    while cursor <= end_int:
-        candidate = str(IPv4Network((cursor, 24)))
-        if candidate not in used:
-            return candidate
-        cursor += step
-    raise SubnetInUseError(
-        f"allocation pool {ALLOCATION_POOL_START}..{ALLOCATION_POOL_END} "
-        "is fully exhausted; delete an old project first"
+    stmt = select(ProjectNode).where(
+        ProjectNode.project_id == project_id,
+        ProjectNode.kind == kind,
     )
+    result = await session.execute(stmt)
+    count = len(result.scalars().all())
+    return f"{_NODE_KIND_LABEL[kind]}-{count + 1}"
 
 
-# ─── create ─────────────────────────────────────────────────────────────────
+def _next_subnet_color_index(session: AsyncSession, project_id: str) -> int:
+    """Pick the next subnet color slot 1..6, cycling past 6.
+
+    This is a pure function (not async) because we don't need to query
+    the DB — the caller passes the session's cached state. Used at
+    link-creation time so the wire gets a unique color in the canvas.
+    """
+    # Note: the caller is expected to query the project's links and
+    # compute count() + 1, then pass that here. This is a deliberate
+    # split so the service layer can stay async without a tiny
+    # helper DB query just for the color.
+    raise NotImplementedError  # replaced by the caller pattern below
+
+
+# ─── Project CRUD ─────────────────────────────────────────────────────────
 
 async def create_project(
-    session: AsyncSession,
-    body: ProjectCreateIn,
+    session: AsyncSession, body: ProjectCreateIn
 ) -> Project:
-    """Generate topology + persist a new project. Returns the Project row.
-
-    Subnet resolution order:
-      1. If the body explicitly set ``subnet`` and did NOT ask for auto
-         assignment → validate uniqueness; raise :class:`SubnetInUseError`
-         on collision so the API can return a 409.
-      2. Otherwise → call :func:`_next_free_subnet` to auto-pick.
-
-    Raises
-    ------
-    ValueError
-        Topology type unknown.
-    BadSubnetError
-        Subnet can't fit the requested host count or overlaps a reserved
-        range.
-    SubnetInUseError
-        Caller explicitly asked for a subnet that's already taken.
-    """
-    used = await _existing_subnets(session)
-
-    subnet: str
-    if body.subnet and not body.assign_subnet_automatically:
-        # Normalise via IPv4Network so e.g. "10.20.0.5/24" matches an
-        # existing "10.20.0.0/24" entry (Docker only stores the network
-        # address but users paste arbitrary hosts).
-        try:
-            canonical = str(IPv4Network(body.subnet, strict=False))
-        except Exception as exc:
-            raise BadSubnetError(f"invalid CIDR: {body.subnet!r}") from exc
-        if canonical in used:
-            raise SubnetInUseError(
-                f"subnet {canonical} is already used by another project; "
-                "pick a different subnet or enable assign_subnet_automatically"
-            )
-        subnet = canonical
-    else:
-        subnet = _next_free_subnet(used)
-
-    try:
-        nodes, edges = generate_topology(
-            topology_type=body.topology_type,
-            host_count=body.host_count,
-            subnet=subnet,
-        )
-    except (BadSubnetError, ValueError):
-        raise
-
-    network = IPv4Network(subnet, strict=False)
-    gateway = str(IPv4Address(int(network.network_address) + 1))
-
+    """Create a new (empty) project. The canvas starts blank."""
     project = Project(
         name=body.name,
-        topology_type=body.topology_type,
-        host_count=body.host_count,
-        subnet=subnet,
-        gateway=gateway,
         status=ProjectStatus.DRAFT,
     )
     session.add(project)
-    await session.flush()  # we need project.id for the FK
-
-    for node in nodes:
-        session.add(ProjectHost(
-            project_id=project.id,
-            host_id=node.host_id,
-            hostname=node.hostname,
-            ip_address=node.ip_address,
-            position_x=node.position_x,
-            position_y=node.position_y,
-        ))
-
-    for edge in edges:
-        session.add(ProjectEdge(
-            project_id=project.id,
-            source_host_id=edge.source_host_id,
-            dest_host_id=edge.dest_host_id,
-        ))
-
     await session.commit()
     await session.refresh(project)
     return project
-
-
-# ─── reads ──────────────────────────────────────────────────────────────────
-
-async def list_projects(session: AsyncSession) -> list[Project]:
-    """Return all projects, newest first. No eager loads (summary view)."""
-    result = await session.execute(
-        select(Project).order_by(Project.created_at.desc())
-    )
-    return list(result.scalars().all())
 
 
 async def get_project(session: AsyncSession, project_id: str) -> Project | None:
-    """Return a project with its hosts + edges eagerly loaded, or None."""
-    result = await session.execute(
+    """Fetch one project with eager-loaded nodes + links + interfaces.
+
+    Returns ``None`` if not found. The API layer maps that to 404.
+    """
+    stmt = (
         select(Project)
         .where(Project.id == project_id)
         .options(
-            selectinload(Project.hosts),  # type: ignore[attr-defined]
-            selectinload(Project.edges),  # type: ignore[attr-defined]
+            selectinload(Project.nodes).selectinload(ProjectNode.interfaces),
+            selectinload(Project.links).selectinload(ProjectLink.capture),
         )
     )
+    result = await session.execute(stmt)
     return result.scalars().first()
 
 
-# ─── update ─────────────────────────────────────────────────────────────────
+async def list_projects(session: AsyncSession) -> list[Project]:
+    """Summary list — newest first, with node + link counts.
 
-async def update_node_position(
-    session: AsyncSession,
-    project_id: str,
-    host_id: str,
-    position_x: float,
-    position_y: float,
-) -> ProjectHost | None:
-    """Persist a drag-and-drop position update. Returns the updated row
-    (or None if the project / host doesn't exist)."""
-    result = await session.execute(
-        select(ProjectHost).where(
-            ProjectHost.project_id == project_id,
-            ProjectHost.host_id == host_id,
-        )
-    )
-    row = result.scalars().first()
-    if row is None:
-        return None
-    row.position_x = position_x
-    row.position_y = position_y
-    await session.commit()
-    await session.refresh(row)
-    return row
-
-
-# ─── lifecycle: start ───────────────────────────────────────────────────────
-
-async def start_project(session: AsyncSession, project_id: str) -> Project | None:
-    """Create bridge + spawn containers for every host. Returns updated Project.
-
-    Steps
-    -----
-    1. Load project + hosts.
-    2. Create (or re-attach to) the per-project bridge network.
-    3. Spawn one container per host, attaching each to both the project
-       bridge (with a pinned IP) and the backend's network.
-    4. Update each ProjectHost row with its container_id.
-    5. Set project status to RUNNING.
-
-    Idempotent: if containers already exist for this project (e.g. partial
-    state from a previous run), we don't double-spawn — we record their IDs.
-
-    Raises
-    ------
-    SubnetInUseError
-        Docker rejected the bridge with a "Pool overlaps" 403 — another
-        network on the host already claims this address space. The API
-        layer turns this into a 409 so the frontend can prompt the user
-        to update the project's subnet.
+    The counts are computed via a subquery so the API doesn't have
+    to touch the related rows (avoids a N+1 and avoids lazy-loading
+    after the session is closed).
     """
-    project = await get_project(session, project_id)
+    from sqlalchemy import func, select
+    from app.models import ProjectNode, ProjectLink
+
+    node_count = (
+        select(func.count(ProjectNode.id))
+        .where(ProjectNode.project_id == Project.id)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    link_count = (
+        select(func.count(ProjectLink.id))
+        .where(ProjectLink.project_id == Project.id)
+        .correlate(Project)
+        .scalar_subquery()
+    )
+    stmt = (
+        select(Project, node_count.label("node_count"), link_count.label("link_count"))
+        .order_by(Project.updated_at.desc())
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+    # Project rows + counts. We attach counts as transient attributes
+    # so the API layer can read them without re-querying.
+    projects: list[Project] = []
+    for project, nc, lc in rows:
+        project._node_count = nc  # type: ignore[attr-defined]
+        project._link_count = lc  # type: ignore[attr-defined]
+        projects.append(project)
+    return projects
+
+
+async def update_project(
+    session: AsyncSession, project_id: str, body: ProjectUpdateIn
+) -> Project | None:
+    """Patch name and/or viewport. Returns the updated project or None."""
+    project = await session.get(Project, project_id)
     if project is None:
         return None
-
-    # 1. Bridge — translate Docker's opaque 403 into our structured error
-    #    so the API layer can return a clean 409 instead of a 500.
-    try:
-        net_name = network_service.create_project_network(project)
-    except docker_errors.APIError as exc:
-        if "pool overlaps" in str(exc).lower():
-            raise SubnetInUseError(
-                f"subnet {project.subnet} is already claimed by another "
-                "Docker network on this host. Edit the project's subnet "
-                "to a free range (e.g. 10.40.0.0/24) and try again."
-            ) from exc
-        raise
-
-    # 2. Spawn
-    hosts_data = [
-        {
-            "host_id": h.host_id,
-            "hostname": h.hostname,
-            "ip_address": h.ip_address,
-        }
-        for h in project.hosts
-    ]
-    spawn_results = container_service.spawn_project_hosts(
-        project_id=project.id,
-        project_network=net_name,
-        backend_network=BACKEND_NETWORK,
-        hosts=hosts_data,
-    )
-
-    # 2b. Spawn the capture container (M2-07 §2). Best-effort: a missing
-    #     capture image must not break project startup, so any failure is
-    #     logged but does NOT set PARTIAL.
-    try:
-        container_service.spawn_project_capture(
-            project_id=project.id,
-            project_network=net_name,
-        )
-    except Exception:
-        # Dashboard will surface "no capture container" via 409 from
-        # the packets endpoints; not fatal here.
-        import logging
-        logging.getLogger(__name__).warning(
-            "capture container for project %s failed to start", project.id
-        )
-
-    # 3. Persist container_ids back to DB rows
-    by_host_id = {r["host_id"]: r for r in spawn_results}
-    for h in project.hosts:
-        result = by_host_id.get(h.host_id)
-        if result and result.get("container_id"):
-            h.container_id = result["container_id"]
-            h.status = "online"  # will be corrected by first heartbeat
-
-    # 4. Status — partial if any host failed to spawn
-    any_failed = any(r.get("error") for r in spawn_results)
-    project.status = ProjectStatus.PARTIAL if any_failed else ProjectStatus.RUNNING
-
+    if body.name is not None:
+        project.name = body.name
+    if body.viewport_x is not None:
+        project.viewport_x = body.viewport_x
+    if body.viewport_y is not None:
+        project.viewport_y = body.viewport_y
+    if body.viewport_zoom is not None:
+        project.viewport_zoom = body.viewport_zoom
     await session.commit()
     await session.refresh(project)
     return project
 
-
-# ─── lifecycle: stop ────────────────────────────────────────────────────────
-
-async def stop_project(session: AsyncSession, project_id: str) -> Project | None:
-    """Stop every container belonging to the project. Keeps project + DB rows.
-
-    Status transitions to STOPPED. ProjectHost.container_id is preserved so
-    the user can hit /start again to re-attach to the same containers.
-    """
-    project = await get_project(session, project_id)
-    if project is None:
-        return None
-
-    stopped = container_service.stop_project_hosts(project_id)
-    project.status = ProjectStatus.STOPPED
-    await session.commit()
-    await session.refresh(project)
-    return project
-
-
-# ─── lifecycle: delete ──────────────────────────────────────────────────────
 
 async def delete_project(session: AsyncSession, project_id: str) -> bool:
-    """Tear down everything: containers, bridge, DB rows. Idempotent.
-
-    Order matters:
-      1. Force-remove containers (so the bridge isn't left dangling).
-         This includes the per-project capture container (M2-07).
-      2. Remove the bridge network.
-      3. Delete the project row (cascade removes hosts + edges).
-    """
-    # 1. Containers
-    container_service.remove_project_hosts(project_id, force=True)
-    container_service.remove_project_capture(project_id, force=True)
-
-    # 2. Network
-    network_service.remove_project_network(project_id)
-
-    # 3. DB
-    result = await session.execute(
-        select(Project).where(Project.id == project_id)
-    )
-    project = result.scalars().first()
+    """Delete a project (and everything under it). Returns True if it existed."""
+    project = await session.get(Project, project_id)
     if project is None:
         return False
     await session.delete(project)
     await session.commit()
     return True
+
+
+# ─── Node CRUD ────────────────────────────────────────────────────────────
+
+async def add_node(
+    session: AsyncSession, project_id: str, body: ProjectNodeCreateIn
+) -> ProjectNode:
+    """Add a new node to a project. The kind comes from the request body;
+    the name is auto-suggested if the user didn't supply one.
+    """
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise ProjectNotFoundError(project_id)
+
+    kind = NodeKind(body.kind)
+    name = body.name or await _next_node_name(session, project_id, kind)
+
+    # Only attackers can have an attack_mode set at creation. Other
+    # kinds ignore the field. We also validate the attack_mode value
+    # is in the allowed set.
+    attack_mode: str | None = None
+    if kind == NodeKind.ATTACKER:
+        attack_mode = body.attack_mode
+        if attack_mode is not None and attack_mode not in ATTACK_MODES:
+            raise ValueError(
+                f"attack_mode must be one of {ATTACK_MODES}, got {attack_mode!r}"
+            )
+
+    node = ProjectNode(
+        project_id=project_id,
+        name=name,
+        kind=kind,
+        canvas_x=body.canvas_x,
+        canvas_y=body.canvas_y,
+        attack_mode=attack_mode,
+        container_status="idle",
+    )
+    session.add(node)
+    await session.commit()
+    await session.refresh(node)
+    return node
+
+
+async def get_node(
+    session: AsyncSession, project_id: str, node_id: str
+) -> ProjectNode | None:
+    stmt = (
+        select(ProjectNode)
+        .where(ProjectNode.id == node_id, ProjectNode.project_id == project_id)
+        .options(selectinload(ProjectNode.interfaces))
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
+
+async def update_node(
+    session: AsyncSession,
+    project_id: str,
+    node_id: str,
+    body: ProjectNodeUpdateIn,
+) -> ProjectNode | None:
+    """Patch a node's name, position, or attack_mode."""
+    node = await get_node(session, project_id, node_id)
+    if node is None:
+        return None
+    if body.name is not None:
+        node.name = body.name
+    if body.canvas_x is not None:
+        node.canvas_x = body.canvas_x
+    if body.canvas_y is not None:
+        node.canvas_y = body.canvas_y
+    if body.attack_mode is not None:
+        if node.kind != NodeKind.ATTACKER:
+            raise ValueError(
+                f"attack_mode can only be set on attacker nodes; "
+                f"this node is {node.kind.value!r}"
+            )
+        if body.attack_mode not in ATTACK_MODES:
+            raise ValueError(
+                f"attack_mode must be one of {ATTACK_MODES}, "
+                f"got {body.attack_mode!r}"
+            )
+        node.attack_mode = body.attack_mode
+    elif body.attack_mode is None and node.attack_mode is not None:
+        # Explicit clear (PATCH with attack_mode=null)
+        node.attack_mode = None
+    await session.commit()
+    await session.refresh(node)
+    return node
+
+
+async def delete_node(
+    session: AsyncSession, project_id: str, node_id: str
+) -> bool:
+    """Delete a node. Raises NodeHasLinksError if any of its interfaces
+    are wired; the API layer maps that to 409 Conflict."""
+    node = await get_node(session, project_id, node_id)
+    if node is None:
+        return False
+
+    # Find any wires that reference any of this node's interfaces.
+    iface_ids = [i.id for i in node.interfaces]
+    if iface_ids:
+        stmt = select(ProjectLink).where(
+            (ProjectLink.iface_a_id.in_(iface_ids))
+            | (ProjectLink.iface_b_id.in_(iface_ids))
+        )
+        result = await session.execute(stmt)
+        wired = list(result.scalars().all())
+        if wired:
+            raise NodeHasLinksError(
+                node_id=node_id,
+                link_ids=[l.id for l in wired],
+            )
+
+    await session.delete(node)
+    await session.commit()
+    return True
+
+
+# ─── Interface CRUD ───────────────────────────────────────────────────────
+
+async def add_interface(
+    session: AsyncSession,
+    project_id: str,
+    node_id: str,
+    body: ProjectInterfaceCreateIn,
+) -> ProjectInterface:
+    """Add a port to a node."""
+    node = await get_node(session, project_id, node_id)
+    if node is None:
+        raise NodeNotFoundError(node_id)
+
+    iface = ProjectInterface(
+        node_id=node_id,
+        name=body.name,
+        ip_address=body.ip_address,
+        subnet_mask=body.subnet_mask,
+    )
+    session.add(iface)
+    await session.commit()
+    await session.refresh(iface)
+    return iface
+
+
+async def update_interface(
+    session: AsyncSession,
+    project_id: str,
+    iface_id: str,
+    body: ProjectInterfaceUpdateIn,
+) -> ProjectInterface | None:
+    """Patch an interface's name, IP, or mask."""
+    # Scope the lookup to the project so a wrong URL returns 404, not
+    # a confusing "found but not yours" 200.
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id == iface_id,
+            ProjectNode.project_id == project_id,
+        )
+    )
+    result = await session.execute(stmt)
+    iface = result.scalars().first()
+    if iface is None:
+        return None
+    if body.name is not None:
+        iface.name = body.name
+    if body.ip_address is not None:
+        iface.ip_address = body.ip_address
+    if body.subnet_mask is not None:
+        iface.subnet_mask = body.subnet_mask
+    await session.commit()
+    await session.refresh(iface)
+    return iface
+
+
+async def delete_interface(
+    session: AsyncSession, project_id: str, iface_id: str
+) -> bool:
+    """Delete an interface. Raises InterfaceIsWiredError if it's on a link."""
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id == iface_id,
+            ProjectNode.project_id == project_id,
+        )
+    )
+    result = await session.execute(stmt)
+    iface = result.scalars().first()
+    if iface is None:
+        return False
+
+    # Reject if wired.
+    stmt = select(ProjectLink).where(
+        (ProjectLink.iface_a_id == iface_id)
+        | (ProjectLink.iface_b_id == iface_id)
+    )
+    result = await session.execute(stmt)
+    wired = list(result.scalars().all())
+    if wired:
+        raise InterfaceIsWiredError(
+            iface_id=iface_id,
+            link_ids=[l.id for l in wired],
+        )
+
+    await session.delete(iface)
+    await session.commit()
+    return True
+
+
+# ─── Link CRUD ────────────────────────────────────────────────────────────
+
+async def add_link(
+    session: AsyncSession, project_id: str, body: ProjectLinkCreateIn
+) -> ProjectLink:
+    """Wire two interfaces on two different nodes. Creates the per-link
+    capture row in the same transaction (the capture is 1:1 with the
+    link and we want them to share a lifetime)."""
+    if body.iface_a_id == body.iface_b_id:
+        raise LinkEndpointsError(
+            "A wire cannot connect an interface to itself."
+        )
+
+    # Load both endpoints, scoped to the project, and check they belong
+    # to different nodes.
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id.in_([body.iface_a_id, body.iface_b_id]),
+            ProjectNode.project_id == project_id,
+        )
+    )
+    result = await session.execute(stmt)
+    ifaces = {i.id: i for i in result.scalars().all()}
+    if len(ifaces) != 2:
+        raise LinkEndpointsError(
+            f"Both interfaces must exist in project {project_id!r}. "
+            f"Found {len(ifaces)} of 2."
+        )
+    a, b = ifaces[body.iface_a_id], ifaces[body.iface_b_id]
+    if a.node_id == b.node_id:
+        raise LinkEndpointsError(
+            f"A wire must connect two different nodes; both endpoints "
+            f"are on node {a.node_id!r}."
+        )
+
+    # Auto-derive the subnet_cidr from the two endpoints, if both are
+    # configured. Stored for query speed; the source of truth is the
+    # interface columns themselves.
+    subnet_cidr: str | None = None
+    if a.ip_address and a.subnet_mask and b.ip_address and b.subnet_mask:
+        if a.subnet_mask == b.subnet_mask:
+            # Use the lower of the two IPs as the network address.
+            ips = sorted([a.ip_address, b.ip_address])
+            mask = a.subnet_mask  # already validated by the schema
+            subnet_cidr = f"{ips[0]}{mask}"
+
+    # Auto-pick the next subnet color slot. We count existing links
+    # in the project + 1, cycling 1..6.
+    stmt = select(ProjectLink).where(ProjectLink.project_id == project_id)
+    result = await session.execute(stmt)
+    existing_count = len(result.scalars().all())
+    color_index = (existing_count % 6) + 1
+
+    link = ProjectLink(
+        project_id=project_id,
+        iface_a_id=body.iface_a_id,
+        iface_b_id=body.iface_b_id,
+        subnet_cidr=subnet_cidr,
+        subnet_color_index=color_index,
+    )
+    session.add(link)
+    # 1:1 child capture — created eagerly so the cascade is symmetric.
+    link.capture = ProjectCapture(status="idle", packet_count=0)
+    await session.commit()
+    await session.refresh(link)
+    return link
+
+
+async def delete_link(
+    session: AsyncSession, project_id: str, link_id: str
+) -> bool:
+    """Delete a link (cascades to its capture row)."""
+    stmt = select(ProjectLink).where(
+        ProjectLink.id == link_id,
+        ProjectLink.project_id == project_id,
+    )
+    result = await session.execute(stmt)
+    link = result.scalars().first()
+    if link is None:
+        return False
+    await session.delete(link)
+    await session.commit()
+    return True
+
+
+# ─── Lifecycle placeholders (implemented in phase 02) ────────────────────
+
+async def start_project(session: AsyncSession, project_id: str) -> Any:
+    """Phase 02 — spawn containers + bridges. Raises NotImplementedError
+    in this phase; the API layer returns 501 to the caller.
+    """
+    raise NotImplementedError(
+        "start_project ships in Milestone 4 phase 02 (router + bridges)"
+    )
+
+
+async def stop_project(session: AsyncSession, project_id: str) -> Any:
+    """Phase 02 — tear down containers + bridges."""
+    raise NotImplementedError(
+        "stop_project ships in Milestone 4 phase 02 (router + bridges)"
+    )

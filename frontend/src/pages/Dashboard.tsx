@@ -1,200 +1,150 @@
-// Dashboard — multi-project overview.
+// Dashboard — minimal M4 overview. Shows the total project count and
+// a few quick stats. Pulls from the same /api/projects endpoint that
+// the Projects page uses (cheap to refetch).
 //
-// Platform-wide rollup + recent activity feed. Polls /api/stats/summary
-// every 5s so the numbers stay fresh without the WS layer needing a new
-// event type.
+// Future phases will add a live activity feed (communications, captures)
+// here, but phase 01 keeps it lean — the editor is the headline.
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { StatsAPI } from '../api/client';
-import type { StatsSummary } from '../types';
+import { useProjectStore } from '../store/projectStore';
+import { Card, StatusPill } from '../components/ui';
+import type { ProjectStatus } from '../types';
 
-const POLL_MS = 5000;
-
-interface StatProps {
-  label: string;
-  value: number | string;
-  color?: string;
-  sub?: string;
+interface Counters {
+  total: number;
+  running: number;
+  stopped: number;
+  totalNodes: number;
+  totalLinks: number;
 }
 
-function Stat({ label, value, color = 'text-text', sub }: StatProps) {
-  return (
-    <div className="bg-panel border border-border rounded-xl p-5">
-      <div className="text-[10px] uppercase tracking-wider text-muted">
-        {label}
-      </div>
-      <div className={`text-4xl font-bold mt-2 ${color}`}>{value}</div>
-      {sub && <div className="text-xs text-muted mt-1">{sub}</div>}
-    </div>
-  );
-}
-
-function fmtTime(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleTimeString();
-  } catch {
-    return iso;
-  }
-}
-
-function shortId(id: string | null): string {
-  if (!id) return '?';
-  return id.replace(/-/g, '').slice(0, 8);
-}
+const STATUS_TONE: Record<ProjectStatus, 'idle' | 'draft' | 'starting' | 'running' | 'partial' | 'stopped' | 'error'> = {
+  draft: 'draft',
+  starting: 'starting',
+  running: 'running',
+  partial: 'partial',
+  stopped: 'stopped',
+  error: 'error',
+};
 
 export default function Dashboard() {
-  const [summary, setSummary] = useState<StatsSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const projects = useProjectStore((s) => s.projects);
+  const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const [counters, setCounters] = useState<Counters>({
+    total: 0,
+    running: 0,
+    stopped: 0,
+    totalNodes: 0,
+    totalLinks: 0,
+  });
 
   useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const data = await StatsAPI.summary();
-        if (!cancelled) {
-          setSummary(data);
-          setError(null);
-        }
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message);
-      }
-    };
-    void tick();
-    const id = setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+    void fetchProjects();
+  }, [fetchProjects]);
 
-  if (!summary) {
-    return (
-      <div className="text-muted">
-        {error ? `Failed to load stats: ${error}` : 'Loading overview…'}
-      </div>
-    );
-  }
-
-  const { projects, hosts, recent_communications } = summary;
-  const onlinePct = hosts.total
-    ? Math.round((hosts.online / hosts.total) * 100)
-    : 0;
+  useEffect(() => {
+    setCounters({
+      total: projects.length,
+      running: projects.filter((p) => p.status === 'running').length,
+      stopped: projects.filter((p) => p.status === 'stopped' || p.status === 'draft').length,
+      totalNodes: projects.reduce((acc, p) => acc + p.node_count, 0),
+      totalLinks: projects.reduce((acc, p) => acc + p.link_count, 0),
+    });
+  }, [projects]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-text">ContainerNet Overview</h1>
-          <p className="text-sm text-muted mt-1">
-            Live rollup across every project. Refreshes every {POLL_MS / 1000}s.
+          <h1 className="text-2xl font-bold text-text-primary">ContainerNet</h1>
+          <p className="text-sm text-text-secondary mt-1">
+            Build a virtual network from scratch. Drop hosts, switches, routers, and wires on a canvas — no templates, no magic.
           </p>
         </div>
         <Link
-          to="/builder"
-          className="bg-accent text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-accent/90"
+          to="/projects"
+          className="inline-flex items-center justify-center h-9 px-3.5 rounded-md text-sm font-medium bg-accent text-text-inverse hover:bg-accent/90 transition-colors"
         >
-          + Create a New Project
+          Go to projects →
         </Link>
       </div>
 
-      {error && (
-        <div className="bg-offline/10 border border-offline text-offline rounded-md p-3 text-xs">
-          Last refresh failed: {error}
-        </div>
-      )}
-
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Stat
-          label="Projects"
-          value={projects.total}
-          sub={`${projects.running} running · ${projects.stopped} stopped`}
-          color="text-accent"
-        />
-        <Stat
-          label="Hosts"
-          value={hosts.total}
-          sub={`${hosts.online} online (${onlinePct}%)`}
-          color="text-online"
-        />
-        <Stat
-          label="Messages (recent)"
-          value={recent_communications.length}
-          sub="latest activity"
-          color="text-text"
-        />
-        <Stat
-          label="Topology templates"
-          value={5}
-          sub="mesh · star · ring · bus · tree"
-          color="text-text"
-        />
+        <Card>
+          <div className="text-2xs uppercase tracking-wider text-text-muted">
+            Projects
+          </div>
+          <div className="text-2xl font-bold text-text-primary mt-1">
+            {counters.total}
+          </div>
+        </Card>
+        <Card>
+          <div className="text-2xs uppercase tracking-wider text-text-muted">
+            Running
+          </div>
+          <div className="text-2xl font-bold text-success mt-1">
+            {counters.running}
+          </div>
+        </Card>
+        <Card>
+          <div className="text-2xs uppercase tracking-wider text-text-muted">
+            Total nodes
+          </div>
+          <div className="text-2xl font-bold text-text-primary mt-1">
+            {counters.totalNodes}
+          </div>
+        </Card>
+        <Card>
+          <div className="text-2xs uppercase tracking-wider text-text-muted">
+            Total wires
+          </div>
+          <div className="text-2xl font-bold text-text-primary mt-1">
+            {counters.totalLinks}
+          </div>
+        </Card>
       </div>
 
-      <div className="bg-panel border border-border rounded-xl p-5">
+      <Card>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-text">Recent Activity</h2>
-          <span className="text-xs text-muted">
-            last {recent_communications.length} communications
-          </span>
+          <h2 className="text-sm font-semibold text-text-primary">Recent projects</h2>
+          <Link
+            to="/projects"
+            className="text-2xs uppercase tracking-wider text-accent hover:underline"
+          >
+            All projects →
+          </Link>
         </div>
-
-        {recent_communications.length === 0 ? (
-          <div className="text-muted text-sm py-8 text-center">
-            No communications yet. Start a project and send a message.
+        {projects.length === 0 ? (
+          <div className="text-sm text-text-secondary py-6 text-center">
+            No projects yet. Open the projects page to create one.
           </div>
         ) : (
-          <div className="divide-y divide-border">
-            {recent_communications.map((c) => (
-              <div
-                key={c.id}
-                className="flex items-center justify-between py-2 text-sm"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="font-mono text-xs text-muted whitespace-nowrap">
-                    {fmtTime(c.timestamp)}
+          <ul className="divide-y divide-border">
+            {projects.slice(0, 5).map((p) => (
+              <li key={p.id}>
+                <Link
+                  to={`/projects/${p.id}/canvas`}
+                  className="flex items-center justify-between py-2.5 hover:bg-bg-surface-2 -mx-2 px-2 rounded transition-colors"
+                >
+                  <span className="text-sm text-text-primary truncate">
+                    {p.name}
                   </span>
-                  <span className="font-mono text-text whitespace-nowrap">
-                    {c.source_host_id} → {c.dest_host_id}
-                  </span>
-                  {c.project_id && (
-                    <Link
-                      to={`/projects/${c.project_id}/topology`}
-                      className="text-[10px] font-mono text-accent hover:underline whitespace-nowrap"
-                      title={c.project_id}
-                    >
-                      [{shortId(c.project_id)}]
-                    </Link>
-                  )}
-                </div>
-                <div className="flex items-center gap-3 whitespace-nowrap">
-                  <span className="text-xs text-muted font-mono truncate max-w-[240px]">
-                    {c.payload}
-                  </span>
-                  <span
-                    className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded ${
-                      c.status === 'delivered'
-                        ? 'bg-online/20 text-online'
-                        : c.status === 'failed'
-                          ? 'bg-offline/20 text-offline'
-                          : 'bg-unknown/20 text-unknown'
-                    }`}
-                  >
-                    {c.status}
-                  </span>
-                  {c.latency_ms != null && (
-                    <span className="text-[10px] font-mono text-muted w-16 text-right">
-                      {c.latency_ms.toFixed(1)} ms
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-2xs font-mono text-text-muted">
+                      {p.node_count} · {p.link_count}
                     </span>
-                  )}
-                </div>
-              </div>
+                    <StatusPill tone={STATUS_TONE[p.status]}>
+                      {p.status}
+                    </StatusPill>
+                  </div>
+                </Link>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

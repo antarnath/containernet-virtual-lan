@@ -1,282 +1,399 @@
-// Projects home — grid of project cards.
+// Projects home — dark grid of project cards on the M4 design system.
 //
-// Each card has:
-//   * A topology-colored left border (mesh=blue, star=purple, ring=green,
-//     bus=yellow, tree=red).
-//   * Status badge + dot in the top-right corner.
-//   * Relative last-updated timestamp ("2 min ago").
-//   * Two-step delete confirmation (cascading warning that it also stops
-//     containers and tears down the bridge).
-//   * Start / Stop / Open / Delete actions.
+// Each card shows:
+//   • the project name (the only user-given field)
+//   • a status pill (draft / running / partial / stopped / error)
+//   • node count + link count
+//   • "updated 2m ago" timestamp
+//   • Open / Delete actions
+//
+// The "+ New project" button opens a modal that takes a name and
+// creates an empty project (no template — the user is the engineer).
+// New projects land directly in /canvas so the user can start
+// dropping nodes.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useProjectStore } from '../store/projectStore';
-import { useToastStore } from '../store/toastStore';
-import { TopologyIcon } from '../utils/topologyIcons';
-import type { Project, ProjectStatus, TopologyType } from '../types';
+import { toast } from '../components/ui';
+import {
+  Button,
+  Card,
+  CardHeader,
+  EmptyState,
+  LoadingSkeleton,
+  StatusPill,
+} from '../components/ui';
+import { NodeIcon } from '../components/icons';
+import type { Project, ProjectStatus } from '../types';
 
-const STATUS_COLOR: Record<ProjectStatus, string> = {
-  draft: 'bg-muted/30 text-muted border-muted',
-  running: 'bg-online/20 text-online border-online',
-  partial: 'bg-unknown/20 text-unknown border-unknown',
-  stopped: 'bg-border text-muted border-muted',
-  error: 'bg-offline/20 text-offline border-offline',
-};
-
-const STATUS_DOT: Record<ProjectStatus, string> = {
-  draft: 'bg-muted',
-  running: 'bg-online animate-pulse',
-  partial: 'bg-unknown',
-  stopped: 'bg-muted',
-  error: 'bg-offline',
-};
-
-const TOPOLOGY_BORDER: Record<TopologyType, string> = {
-  mesh: 'border-l-blue-500',
-  star: 'border-l-purple-500',
-  ring: 'border-l-green-500',
-  bus: 'border-l-yellow-500',
-  tree: 'border-l-red-500',
-};
+// ─── helpers ────────────────────────────────────────────────────────────
 
 function relativeTime(iso: string): string {
   const then = new Date(iso).getTime();
-  const now = Date.now();
   if (Number.isNaN(then)) return '—';
-  const diffSec = Math.round((now - then) / 1000);
+  const diffSec = Math.round((Date.now() - then) / 1000);
   if (diffSec < 60) return `${diffSec}s ago`;
   if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
   if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`;
   return `${Math.round(diffSec / 86400)}d ago`;
 }
 
-function ProjectCard({ project }: { project: Project }) {
-  const navigate = useNavigate();
-  const startProject = useProjectStore((s) => s.startProject);
-  const stopProject = useProjectStore((s) => s.stopProject);
-  const deleteProject = useProjectStore((s) => s.deleteProject);
-  const actionInFlight = useProjectStore((s) => s.actionInFlight);
-  const pushToast = useToastStore((s) => s.push);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+const STATUS_TONE: Record<ProjectStatus, 'idle' | 'draft' | 'starting' | 'running' | 'partial' | 'stopped' | 'error'> = {
+  draft: 'draft',
+  starting: 'starting',
+  running: 'running',
+  partial: 'partial',
+  stopped: 'stopped',
+  error: 'error',
+};
 
-  const isBusy = (kind: string) => actionInFlight === kind;
-  const isRunning = project.status === 'running' || project.status === 'partial';
-  const isStopped =
-    project.status === 'stopped' ||
-    project.status === 'draft' ||
-    project.status === 'error';
+const STATUS_PULSE: Partial<Record<ProjectStatus, boolean>> = {
+  running: true,
+  partial: true,
+};
 
-  async function handleStart(e: React.MouseEvent) {
-    e.stopPropagation();
+// ─── New-project modal ──────────────────────────────────────────────────
+
+function NewProjectModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const createProject = useProjectStore((s) => s.createProject);
+  const [name, setName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setSubmitting(true);
     try {
-      await startProject(project.id);
-      pushToast({
-        kind: 'success',
-        title: 'Project started',
-        message: `Containers are coming up for ${project.name}.`,
-      });
+      const project = await createProject({ name: name.trim() });
+      if (project) {
+        toast.success('Project created', project.name);
+        onCreated(project.id);
+      } else {
+        onClose();
+      }
     } catch (err) {
-      pushToast({
-        kind: 'error',
-        title: 'Start failed',
-        message: (err as Error).message,
-      });
-    }
-  }
-
-  async function handleStop(e: React.MouseEvent) {
-    e.stopPropagation();
-    try {
-      await stopProject(project.id);
-      pushToast({
-        kind: 'info',
-        title: 'Project stopped',
-        message: `${project.name} containers stopped.`,
-      });
-    } catch (err) {
-      pushToast({
-        kind: 'error',
-        title: 'Stop failed',
-        message: (err as Error).message,
-      });
-    }
-  }
-
-  async function handleDelete(e: React.MouseEvent) {
-    e.stopPropagation();
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      // Auto-clear the pending confirmation after 4s of inactivity.
-      window.setTimeout(() => setConfirmDelete(false), 4000);
-      return;
-    }
-    try {
-      await deleteProject(project.id);
-      pushToast({
-        kind: 'info',
-        title: 'Project deleted',
-        message: project.name,
-      });
-    } catch (err) {
-      pushToast({
-        kind: 'error',
-        title: 'Delete failed',
-        message: (err as Error).message,
-      });
+      toast.error('Could not create project', (err as Error).message);
     } finally {
-      setConfirmDelete(false);
+      setSubmitting(false);
     }
   }
 
   return (
     <div
-      onClick={() => navigate(`/projects/${project.id}/topology`)}
-      className={`relative bg-panel border border-border border-l-4 ${
-        TOPOLOGY_BORDER[project.topology_type]
-      } rounded-xl p-5 hover:border-accent hover:border-l-4 transition-colors cursor-pointer group`}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg-base/70 backdrop-blur-sm animate-slide-in-up"
+      onClick={onClose}
     >
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-bg border border-border flex items-center justify-center text-accent">
-            <TopologyIcon type={project.topology_type} className="w-7 h-7" />
-          </div>
-          <div>
-            <div
-              className="font-semibold text-text truncate max-w-[180px]"
-              title={project.name}
+      <Card
+        elevation="raised"
+        className="w-[420px] max-w-[90vw]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <form onSubmit={handleSubmit}>
+          <CardHeader
+            title="New project"
+            subtitle="Start with a blank canvas. You'll add hosts, routers, and switches yourself."
+          />
+          <label
+            htmlFor="project-name"
+            className="block text-2xs uppercase tracking-wider text-text-muted mb-1.5"
+          >
+            Name
+          </label>
+          <input
+            id="project-name"
+            ref={inputRef}
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. My first network"
+            maxLength={120}
+            className={[
+              'w-full h-9 px-3 rounded-md text-sm',
+              'bg-bg-base text-text-primary placeholder:text-text-muted',
+              'border border-border focus:border-accent focus:outline-none',
+              'transition-colors duration-fast',
+            ].join(' ')}
+            autoComplete="off"
+          />
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="ghost" onClick={onClose} type="button">
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              type="submit"
+              disabled={!name.trim()}
+              loading={submitting}
             >
-              {project.name}
-            </div>
-            <div className="text-xs text-muted capitalize">
-              {project.topology_type} · {project.host_count} host
-              {project.host_count === 1 ? '' : 's'}
-            </div>
+              Create
+            </Button>
           </div>
-        </div>
-        <span
-          className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border ${STATUS_COLOR[project.status]}`}
-        >
-          <span
-            className={`inline-block w-1.5 h-1.5 rounded-full mr-1 align-middle ${STATUS_DOT[project.status]}`}
-          ></span>
-          {project.status}
-        </span>
-      </div>
-
-      <div className="text-xs text-muted font-mono mb-1">
-        {project.subnet} <span className="text-border">/</span> gw{' '}
-        {project.gateway}
-      </div>
-      <div className="text-[10px] text-muted mb-4">
-        updated {relativeTime(project.updated_at)}
-      </div>
-
-      <div className="flex gap-2">
-        {isStopped && (
-          <button
-            onClick={handleStart}
-            disabled={isBusy('start')}
-            className="flex-1 text-xs bg-accent text-white px-3 py-1.5 rounded-md hover:bg-accent/90 disabled:opacity-50"
-          >
-            {isBusy('start') ? 'Starting…' : 'Start'}
-          </button>
-        )}
-        {isRunning && (
-          <button
-            onClick={handleStop}
-            disabled={isBusy('stop')}
-            className="flex-1 text-xs bg-bg border border-border text-text px-3 py-1.5 rounded-md hover:border-accent disabled:opacity-50"
-          >
-            {isBusy('stop') ? 'Stopping…' : 'Stop'}
-          </button>
-        )}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/projects/${project.id}/topology`);
-          }}
-          className="flex-1 text-xs bg-bg border border-border text-text px-3 py-1.5 rounded-md hover:border-accent"
-        >
-          Open
-        </button>
-        <button
-          onClick={handleDelete}
-          disabled={isBusy('delete')}
-          className={`text-xs px-3 py-1.5 rounded-md border disabled:opacity-50 ${
-            confirmDelete
-              ? 'bg-offline text-white border-offline'
-              : 'bg-bg border-border text-offline hover:border-offline'
-          }`}
-          title={
-            confirmDelete
-              ? 'Click again to confirm — this stops all containers and removes the bridge'
-              : 'Delete project'
-          }
-        >
-          {confirmDelete ? 'Confirm?' : '×'}
-        </button>
-      </div>
+        </form>
+      </Card>
     </div>
   );
 }
+
+// ─── Delete confirmation modal ──────────────────────────────────────────
+
+function DeleteConfirmModal({
+  project,
+  onClose,
+  onDeleted,
+}: {
+  project: Project;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const deleteProject = useProjectStore((s) => s.deleteProject);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function handleDelete() {
+    setSubmitting(true);
+    try {
+      const ok = await deleteProject(project.id);
+      if (ok) {
+        toast.info('Project deleted', project.name);
+        onDeleted();
+      }
+    } catch (err) {
+      toast.error('Could not delete project', (err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg-base/70 backdrop-blur-sm animate-slide-in-up"
+      onClick={onClose}
+    >
+      <Card
+        elevation="raised"
+        className="w-[420px] max-w-[90vw]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <CardHeader
+          title={`Delete "${project.name}"?`}
+          subtitle="This will remove the project and every node, interface, and wire inside it."
+        />
+        <div className="flex justify-end gap-2 mt-4">
+          <Button variant="ghost" onClick={onClose} type="button">
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            onClick={handleDelete}
+            loading={submitting}
+          >
+            Delete project
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Project card ───────────────────────────────────────────────────────
+
+function ProjectCard({
+  project,
+  onRequestDelete,
+}: {
+  project: Project;
+  onRequestDelete: (p: Project) => void;
+}) {
+  const navigate = useNavigate();
+
+  return (
+    <Card
+      elevation="flat"
+      className="hover:border-border-strong transition-colors duration-fast"
+    >
+      <button
+        type="button"
+        onClick={() => navigate(`/projects/${project.id}/canvas`)}
+        className="w-full text-left"
+      >
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-text-primary truncate" title={project.name}>
+              {project.name}
+            </div>
+            <div className="text-2xs text-text-muted mt-0.5 font-mono">
+              {project.node_count} node{project.node_count === 1 ? '' : 's'} ·{' '}
+              {project.link_count} wire{project.link_count === 1 ? '' : 's'}
+            </div>
+          </div>
+          <StatusPill tone={STATUS_TONE[project.status]} pulse={STATUS_PULSE[project.status]}>
+            {project.status}
+          </StatusPill>
+        </div>
+
+        <div className="text-2xs text-text-muted mb-3">
+          updated {relativeTime(project.updated_at)}
+        </div>
+      </button>
+
+      <div className="flex gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => navigate(`/projects/${project.id}/canvas`)}
+          className="flex-1"
+          icon={<NodeIcon kind="router" size={14} />}
+        >
+          Open canvas
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onRequestDelete(project)}
+          aria-label="Delete project"
+          title="Delete project"
+        >
+          ✕
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+// ─── Page ───────────────────────────────────────────────────────────────
 
 export default function ProjectsPage() {
   const projects = useProjectStore((s) => s.projects);
   const loading = useProjectStore((s) => s.projectsLoading);
   const error = useProjectStore((s) => s.projectsError);
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
+  const navigate = useNavigate();
+
+  const [showNew, setShowNew] = useState(false);
+  const [toDelete, setToDelete] = useState<Project | null>(null);
 
   useEffect(() => {
-    fetchProjects();
+    void fetchProjects();
   }, [fetchProjects]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text">Projects</h1>
-          <p className="text-sm text-muted mt-1">
-            Each project is its own isolated Docker bridge with its own hosts.
+          <h1 className="text-2xl font-bold text-text-primary">Projects</h1>
+          <p className="text-sm text-text-secondary mt-1">
+            Each project is its own network canvas. Open one to drop hosts, switches, routers, and wires.
           </p>
         </div>
-        <button
-          onClick={() => (window.location.href = '/builder')}
-          className="bg-accent text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-accent/90"
-        >
-          + New Project
-        </button>
+        <Button variant="primary" onClick={() => setShowNew(true)}>
+          + New project
+        </Button>
       </div>
 
-      {loading && projects.length === 0 && (
-        <div className="text-muted text-sm">Loading projects…</div>
+      {error && (
+        <Card className="border-danger/40 bg-danger-soft">
+          <div className="text-sm text-danger">Failed to load projects: {error}</div>
+        </Card>
       )}
 
-      {error && (
-        <div className="bg-offline/10 border border-offline text-offline rounded-md p-4 text-sm">
-          Failed to load projects: {error}
+      {loading && projects.length === 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[0, 1, 2].map((i) => (
+            <Card key={i}>
+              <LoadingSkeleton height="14px" width="60%" />
+              <div className="h-2" />
+              <LoadingSkeleton height="10px" width="40%" />
+              <div className="h-6" />
+              <div className="flex gap-2">
+                <LoadingSkeleton height="28px" width="100%" />
+                <LoadingSkeleton height="28px" width="32px" />
+              </div>
+            </Card>
+          ))}
         </div>
       )}
 
       {!loading && projects.length === 0 && !error && (
-        <div className="bg-panel border border-border rounded-xl p-10 text-center">
-          <div className="text-muted mb-3">No projects yet.</div>
-          <a
-            href="/builder"
-            className="inline-block bg-accent text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-accent/90"
-          >
-            Create your first LAN
-          </a>
-        </div>
+        <EmptyState
+          icon={
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              aria-hidden
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M3 9h18" />
+              <path d="M8 14h8" />
+            </svg>
+          }
+          title="No projects yet"
+          description="Start with a blank canvas. You'll add hosts, switches, routers, and wires yourself — there are no templates."
+          action={
+            <Button variant="primary" onClick={() => setShowNew(true)}>
+              + New project
+            </Button>
+          }
+        />
       )}
 
       {projects.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {projects.map((p) => (
-            <ProjectCard key={p.id} project={p} />
+            <ProjectCard
+              key={p.id}
+              project={p}
+              onRequestDelete={setToDelete}
+            />
           ))}
         </div>
+      )}
+
+      {showNew && (
+        <NewProjectModal
+          onClose={() => setShowNew(false)}
+          onCreated={(id) => {
+            setShowNew(false);
+            navigate(`/projects/${id}/canvas`);
+          }}
+        />
+      )}
+
+      {toDelete && (
+        <DeleteConfirmModal
+          project={toDelete}
+          onClose={() => setToDelete(null)}
+          onDeleted={() => setToDelete(null)}
+        />
       )}
     </div>
   );
