@@ -217,8 +217,21 @@ async def list_projects(session: AsyncSession) -> list[Project]:
 async def update_project(
     session: AsyncSession, project_id: str, body: ProjectUpdateIn
 ) -> Project | None:
-    """Patch name and/or viewport. Returns the updated project or None."""
-    project = await session.get(Project, project_id)
+    """Patch name and/or viewport. Returns the updated project or None.
+
+    Eagerly loads nodes + links so the API layer's ``_project_out``
+    can read ``len(p.nodes)`` / ``len(p.links)`` without tripping a
+    lazy-load outside the session (would raise MissingGreenlet).
+    """
+    stmt = (
+        select(Project)
+        .where(Project.id == project_id)
+        .options(
+            selectinload(Project.nodes).selectinload(ProjectNode.interfaces),
+            selectinload(Project.links).selectinload(ProjectLink.capture),
+        )
+    )
+    project = (await session.execute(stmt)).scalars().first()
     if project is None:
         return None
     if body.name is not None:
@@ -230,7 +243,6 @@ async def update_project(
     if body.viewport_zoom is not None:
         project.viewport_zoom = body.viewport_zoom
     await session.commit()
-    await session.refresh(project)
     return project
 
 
