@@ -97,8 +97,45 @@ async def install_inter_router_routes(project: Project) -> InstallResult:
         for i in n.interfaces:
             iface_index[i.id] = (n, i)
 
+    # M4-09 fix — wait for every router's agent to be reachable
+    # before installing. The agent starts an aiohttp server on
+    # :9090 inside the container; that server takes a moment to
+    # bind after the container is up. If we race past it, the
+    # first install attempt hits ``Connection refused`` and the
+    # user's inter-router routes are silently missing. Poll
+    # ``/state`` (which the agent serves on :9090) with a short
+    # budget — agents typically come up within a second or two.
+    import asyncio
+    from app.services import router_proxy as _router_proxy
+    deadline = asyncio.get_event_loop().time() + 5.0
+    pending = [r for r in routers if r.container_id]
+    while pending and asyncio.get_event_loop().time() < deadline:
+        still_pending: list[ProjectNode] = []
+        for r in pending:
+            try:
+                state = await _router_proxy.get_router_state(r.id, r.container_id)
+                if state.error:
+                    still_pending.append(r)
+                # else: reachable — drop from the list
+            except Exception:
+                still_pending.append(r)
+        if not still_pending:
+            break
+        await asyncio.sleep(0.25)
+        pending = still_pending
+    if pending:
+        log.warning(
+            "[route_installer] %d router agent(s) not reachable after 5s; "
+            "some inter-router routes may fail to install: %s",
+            len(pending), [r.name for r in pending],
+        )
+
     # For every link whose BOTH endpoints are on routers, install
     # the routes.
+    log.info(
+        "[route_installer] project=%s routers=%d links=%d",
+        project.id, len(routers), len(project.links),
+    )
     for link in project.links:
         a = iface_index.get(link.iface_a_id)
         b = iface_index.get(link.iface_b_id)
@@ -248,15 +285,27 @@ async def _install_peer_lans(
         skip_subnet=skip_subnet,
         skip_link_id=uplink_link_id,
     ):
-        install = await router_proxy.set_route(
-            target_node.container_id,
-            dst=subnet,
-            via=via_ip,
-            dev=None,
-        )
+        # M4-09 fix — retry the install up to 3 times to handle
+        # brief agent-not-ready windows. The first attempt right
+        # after spawn often hits Connection refused because the
+        # agent's aiohttp server hasn't bound :9090 yet, even
+        # though the rest of the project looks healthy.
+        install = None
+        for attempt in range(3):
+            install = await router_proxy.set_route(
+                target_node.container_id,
+                dst=subnet,
+                via=via_ip,
+                dev=None,
+            )
+            if install.ok:
+                break
+            if attempt < 2:
+                import asyncio as _a
+                await _a.sleep(0.5)
         if install.ok:
             result.installed += 1
-            log.info(
+            log.debug(
                 "[route_installer] %s: route %s via %s OK",
                 target_node.name, subnet, via_ip,
             )

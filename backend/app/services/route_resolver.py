@@ -161,12 +161,22 @@ async def resolve_route(
                 except ValueError:
                     continue
 
-    # Routes per router: list of (dst_cidr, iface_name). We
-    # pull the routing table from the live router agent via
+    # Routes per router: list of (dst_cidr, gateway, kernel_iface).
+    # We pull the routing table from the live router agent via
     # ``router_proxy`` (cached for 2s). If a router's agent
     # is unreachable, we fall back to "no routes" — the walk
     # will then succeed for directly-attached subnets only.
-    routes_by_node: dict[str, list[tuple[ipaddress.IPv4Network, str]]] = {}
+    #
+    # M4-09 fix: we now keep the ``gateway`` (via-IP) alongside the
+    # kernel-resolved iface. The route_resolver can't match
+    # ``my_iface.name == best.iface`` because the kernel name
+    # (``eth3``) is assigned by Docker on attach order and almost
+    # never matches the project-model name the user typed
+    # (``eth2``). Instead we find the egress link by matching the
+    # route's gateway IP against the peer's iface IP on each
+    # adjacent link — that gives us the correct link regardless
+    # of kernel vs project naming.
+    routes_by_node: dict[str, list[tuple[ipaddress.IPv4Network, str, str]]] = {}
     try:
         from app.services import router_proxy
         for n in project.nodes:
@@ -184,7 +194,9 @@ async def resolve_route(
                     continue
                 if not entry.iface:
                     continue
-                routes_by_node.setdefault(n.id, []).append((net, entry.iface))
+                routes_by_node.setdefault(n.id, []).append(
+                    (net, entry.gateway, entry.iface)
+                )
     except Exception as exc:
         log.debug("[route_resolver] could not enrich router routes: %s", exc)
 
@@ -255,27 +267,64 @@ async def resolve_route(
 
         if current_node.kind == "router":
             # Longest-prefix match in the static-routes table.
-            best: tuple[ipaddress.IPv4Network, str] | None = None
-            for net, dev in routes_by_node.get(current_node.id, []):
+            best: tuple[ipaddress.IPv4Network, str, str] | None = None
+            for entry in routes_by_node.get(current_node.id, []):
+                net, gw, dev = entry
                 if dst in net:
                     if best is None or net.prefixlen > best[0].prefixlen:
-                        best = (net, dev)
+                        best = entry
             if best is None:
                 raise RouteError(
                     f"router {current_node.name!r} has no route to {dst_ip}"
                 )
-            # Find the interface on this router with the matching dev name.
+            # M4-09 fix: the route's gateway IP (``via``) is the
+            # peer router's iface IP on the egress link. The
+            # kernel-resolved ``dev`` is unreliable for matching
+            # because the project's interface name (user-typed,
+            # ``eth2``) doesn't match the kernel's auto-assigned
+            # name (``eth3``). We pick the egress link by finding
+            # the adjacent link whose peer's IP equals the route's
+            # gateway. If the gateway is empty (a directly-attached
+            # route) fall back to matching by link subnet.
+            best_net, best_gw, best_dev = best
             for neighbor, link, my_iface, peer_iface in adjacency.get(current_node.id, []):
-                if my_iface.name == best[1]:
+                if best_gw and peer_iface.ip_address == best_gw:
                     next_link = link
                     next_neighbor = neighbor
                     next_egress_iface = my_iface
                     next_peer_iface = peer_iface
                     break
+                if not best_gw and link.subnet_cidr:
+                    try:
+                        if dst in ipaddress.ip_network(link.subnet_cidr, strict=False):
+                            next_link = link
+                            next_neighbor = neighbor
+                            next_egress_iface = my_iface
+                            next_peer_iface = peer_iface
+                            break
+                    except ValueError:
+                        continue
+            if next_link is None:
+                # Final fallback: the gateway IP might be the
+                # directly-attached subnet's broadcast / any-IP
+                # (e.g. the bridge gateway). Match by link subnet
+                # containing the dst.
+                for neighbor, link, my_iface, peer_iface in adjacency.get(current_node.id, []):
+                    if link.subnet_cidr:
+                        try:
+                            if dst in ipaddress.ip_network(link.subnet_cidr, strict=False):
+                                next_link = link
+                                next_neighbor = neighbor
+                                next_egress_iface = my_iface
+                                next_peer_iface = peer_iface
+                                break
+                        except ValueError:
+                            continue
             if next_link is None:
                 raise RouteError(
                     f"router {current_node.name!r} routes to {dst_ip} via "
-                    f"dev {best[1]!r} but no such interface is attached"
+                    f"gateway {best_gw!r} but no adjacent link has that "
+                    f"peer IP"
                 )
         else:
             # Host / switch / server / attacker: egress is the link
