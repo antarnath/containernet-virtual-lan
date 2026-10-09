@@ -1,10 +1,14 @@
 // Toolbox — the left rail of the canvas. Each row is a "drop a node"
-// button for one of the 5 node kinds. The visual style matches the
+// button for one of the node kinds. The visual style matches the
 // NodeIcon: Cisco silhouette in the kind's color, name + one-liner.
 //
 // Phase 01 only — drag from the rail to the canvas and a new node
 // is created via the API. The "add at center" fallback handles the
 // common case (one click drops a node at the current viewport center).
+//
+// Note: 'switch' and 'server' are temporarily hidden from the toolbox
+// (the underlying NodeKind still exists, so projects already containing
+// them keep working). Re-enable by re-adding the two entries below.
 
 import { type DragEvent } from 'react';
 import type { NodeKind } from '../types';
@@ -33,22 +37,10 @@ const KIND_META: KindMeta[] = [
     textClass: 'text-node-host',
   },
   {
-    kind: 'switch',
-    label: 'Switch',
-    blurb: 'L2 bridge',
-    textClass: 'text-node-switch',
-  },
-  {
     kind: 'router',
     label: 'Router',
     blurb: 'L3 gateway',
     textClass: 'text-node-router',
-  },
-  {
-    kind: 'server',
-    label: 'Server',
-    blurb: 'service host',
-    textClass: 'text-node-server',
   },
   {
     kind: 'attacker',
