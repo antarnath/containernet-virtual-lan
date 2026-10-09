@@ -92,13 +92,34 @@ function nodeToFlow(
   };
 }
 
-function linkToFlow(l: ProjectLink): Edge<CanvasEdgeData> {
+function linkToFlow(
+  l: ProjectLink,
+  ifaceToNode: Map<string, string>,
+): Edge<CanvasEdgeData> {
+  // React Flow needs the *node id* in `source`/`target`, and the
+  // *handle id* (our iface id + role + side suffix) in
+  // `sourceHandle`/`targetHandle`. The link's `iface_a_id` /
+  // `iface_b_id` are backend iface ids, so we resolve the parent
+  // node id from a pre-built map. The handle id has to match one
+  // of the four handles CanvasNode renders
+  // (`::src_l` / `::tgt_l` / `::src_r` / `::tgt_r`) — we pick the
+  // left-side source and right-side target by default, but React
+  // Flow only uses these for the SVG handle lookup, so either
+  // side works.
+  const sourceNode = ifaceToNode.get(l.iface_a_id);
+  const targetNode = ifaceToNode.get(l.iface_b_id);
+  if (!sourceNode || !targetNode) {
+    return null as unknown as Edge<CanvasEdgeData>;
+  }
   return {
     id: l.id,
-    source: l.iface_a_id, // React Flow source/target is the handle id (= iface id)
-    target: l.iface_b_id,
-    sourceHandle: l.iface_a_id,
-    targetHandle: l.iface_b_id,
+    source: sourceNode,
+    target: targetNode,
+    // Match one of the 4 handles CanvasNode renders for each iface
+    // (bug #49). The actual handle used at draw time doesn't matter
+    // as long as it exists on the node.
+    sourceHandle: `${l.iface_a_id}::src_l`,
+    targetHandle: `${l.iface_b_id}::tgt_r`,
     type: 'canvasEdge',
     data: {
       subnet_cidr: l.subnet_cidr,
@@ -175,7 +196,33 @@ function CanvasInner({
         ),
       ),
     );
-    setEdges(current.links.map(linkToFlow));
+    // Build the iface-id → node-id map so linkToFlow can resolve
+    // React Flow's source/target (which must be node ids).
+    const ifaceToNode = new Map<string, string>();
+    for (const n of current.nodes) {
+      for (const i of n.interfaces) {
+        ifaceToNode.set(i.id, n.id);
+      }
+    }
+    setEdges(
+      current.links
+        .map((l) => linkToFlow(l, ifaceToNode))
+        .filter((e): e is Edge<CanvasEdgeData> => e !== null),
+    );
+    // Debug: expose to window so we can inspect edges in devtools.
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __cnDebug: unknown }).__cnDebug = {
+        nodes: current.nodes.map((n) => ({ id: n.id, name: n.name, x: n.canvas_x, y: n.canvas_y })),
+        links: current.links.map((l) => ({ id: l.id, a: l.iface_a_id, b: l.iface_b_id, subnet: l.subnet_cidr })),
+        ifaceMap: Array.from(ifaceToNode.entries()),
+      };
+      // eslint-disable-next-line no-console
+      console.log('[Canvas] hydrated', {
+        nodes: current.nodes.length,
+        links: current.links.length,
+        edges: (window as unknown as { __cnDebug: { edges?: unknown } }).__cnDebug,
+      });
+    }
   }, [current, projectId, anomalousNodeIds, activeAttackers]);
 
   // If the project is missing on first mount, fetch it.
@@ -184,6 +231,17 @@ function CanvasInner({
       void fetchProject(projectId);
     }
   }, [current, fetchProject, projectId]);
+
+  // M4 phase 08 — prune expired message trails every 500ms so the
+  // canvas wires don't keep glowing after the data has stopped
+  // flowing. The store's prune is a no-op if nothing is active.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      useRealtimeStore.getState().pruneMessageTrails();
+      useRealtimeStore.getState().pruneActiveAttackers();
+    }, 500);
+    return () => window.clearInterval(t);
+  }, []);
 
   // ─── drop from toolbox ──────────────────────────────────────
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -238,17 +296,41 @@ function CanvasInner({
   );
 
   // ─── node changes (drag, select, remove) ────────────────────
+  // The latest position per node id — we update this on every
+  // position change so we have the final coords ready when React
+  // Flow fires the drag-end event (which arrives WITHOUT a
+  // `position` field — see `updateNodePositions` in
+  // @reactflow/core: the drag-stop call passes
+  // `positionChanged=false`, so the change object is just
+  // `{id, type: 'position', dragging: false}`). Without this
+  // tracker we'd save undefined. (bug #46 follow-on.)
+  const lastPositionRef = useRef<Map<string, { x: number; y: number }>>(
+    new Map(),
+  );
+
   const onNodesChange: OnNodesChange = useCallback(
     (changes: NodeChange[]) => {
       setNodes((nds) => applyNodeChanges(changes, nds) as Node<CanvasNodeData>[]);
 
-      // Persist the new position when a drag ends.
       for (const c of changes) {
-        if (c.type === 'position' && c.dragging === false && c.position) {
-          void moveNode(projectId, c.id, {
-            canvas_x: c.position.x,
-            canvas_y: c.position.y,
-          });
+        if (c.type === 'position') {
+          // While dragging, remember the latest position. When the
+          // drag ends, `c.position` is undefined — fall back to
+          // the tracker.
+          if (c.position) {
+            lastPositionRef.current.set(c.id, c.position);
+          }
+          if (c.dragging === false) {
+            const finalPos =
+              c.position ?? lastPositionRef.current.get(c.id);
+            if (finalPos) {
+              lastPositionRef.current.delete(c.id);
+              void moveNode(projectId, c.id, {
+                canvas_x: finalPos.x,
+                canvas_y: finalPos.y,
+              });
+            }
+          }
         }
       }
     },
@@ -285,14 +367,28 @@ function CanvasInner({
   const onConnect: OnConnect = useCallback(
     async (params: Connection) => {
       if (!params.source || !params.target) return;
-      if (params.source === params.target) {
+      // React Flow's `Connection` has `source` / `target` as NODE ids
+      // and `sourceHandle` / `targetHandle` as HANDLE ids. Our
+      // handle id is `${iface.id}::${src|tgt}_{l|r}` (bug #49 — 4
+      // handles per iface so direction doesn't matter). Strip the
+      // role+side suffix from the *handle* ids to recover the
+      // backend iface id, which is what `addLink` expects.
+      const stripRole = (handleId: string) =>
+        handleId.replace(/::(src|tgt)_[lr]$/, '');
+      const ifaceA = params.sourceHandle ? stripRole(params.sourceHandle) : '';
+      const ifaceB = params.targetHandle ? stripRole(params.targetHandle) : '';
+      if (!ifaceA || !ifaceB) {
+        toast.warning('Invalid wire', 'Missing interface id.');
+        return;
+      }
+      if (ifaceA === ifaceB) {
         toast.warning('Invalid wire', 'An interface cannot wire to itself.');
         return;
       }
       try {
         await addLink(projectId, {
-          iface_a_id: params.source,
-          iface_b_id: params.target,
+          iface_a_id: ifaceA,
+          iface_b_id: ifaceB,
         });
         toast.success('Wire added', 'Two interfaces connected.');
       } catch (e) {
@@ -435,7 +531,11 @@ function CanvasInner({
             gap={20}
             size={1.2}
           />
-          <Controls position="bottom-right" showInteractive={false} />
+          {/* Bug #49 part 2 — bottom-right was covering node
+              handles in the bottom-right canvas region, making
+              drags silently fail. Top-right leaves the bottom for
+              the MiniMap and the bottom-right handle area clear. */}
+          <Controls position="top-right" showInteractive={false} />
           <MiniMap
             position="bottom-left"
             pannable

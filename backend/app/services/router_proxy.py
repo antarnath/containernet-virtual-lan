@@ -183,10 +183,110 @@ def invalidate(node_id: str) -> None:
     _cache_invalidate(node_id)
 
 
+# ─── write-side (route installation) ───────────────────────────────────
+# Used by route_installer.py to push static routes into a router
+# container's kernel via the agent's ``POST /routes`` endpoint.
+# The agent runs ``ip route replace …`` server-side, so a success
+# means the route is in the kernel immediately and survives until
+# the container is stopped.
+
+@dataclass
+class RouteInstallResult:
+    ok: bool
+    error: str | None = None
+    route: str | None = None  # The route string the agent installed
+
+
+async def set_route(
+    container_id: str | None,
+    *,
+    dst: str,
+    via: str | None = None,
+    dev: str | None = None,
+) -> RouteInstallResult:
+    """Install (or replace) a static route in a router's kernel.
+
+    Wraps the agent's ``POST /routes`` handler. ``via`` may be
+    omitted for directly-attached subnets (rare — most routes
+    installed by the system will have a via). The agent's
+    ``ip route replace`` makes the call idempotent: re-installing
+    the same route is a no-op.
+
+    Retries briefly on connection-refused: right after
+    ``containers.run`` the agent's HTTP server may not be bound
+    yet. The retries cover the typical agent-startup race without
+    blocking the start path for more than a couple of seconds.
+
+    Returns a ``RouteInstallResult`` with ``ok=True`` on a 2xx
+    response from the agent. Network/timeout errors return
+    ``ok=False`` with the exception message; the caller decides
+    whether to retry or log-and-continue.
+    """
+    if not container_id:
+        return RouteInstallResult(ok=False, error="no container_id")
+    url = agent_url(container_id, "/routes")
+    if not url:
+        # Container may not be attached to a routable network yet
+        # (the attach call finished but the veth hasn't come up).
+        # Wait briefly and try again — we want to install routes
+        # before the project returns to the user.
+        for _ in range(5):
+            await asyncio.sleep(0.3)
+            url = agent_url(container_id, "/routes")
+            if url:
+                break
+    if not url:
+        return RouteInstallResult(ok=False, error="agent unreachable")
+    body = json.dumps({"dst": dst, "via": via, "dev": dev}).encode("utf-8")
+    # Retry the POST itself briefly to ride out the agent-startup
+    # race. ``ip route replace`` is idempotent so retrying on a
+    # transient refusal is safe.
+    last: RouteInstallResult | None = None
+    for attempt in range(5):
+        result = await asyncio.to_thread(_post_json, url, body)
+        if result.ok:
+            return result
+        last = result
+        # Only retry on connection-level errors, not on the agent
+        # explicitly returning ok=False (those won't fix themselves).
+        err = (result.error or "").lower()
+        if "refused" not in err and "timeout" not in err and "reset" not in err:
+            return result
+        await asyncio.sleep(0.3)
+    return last or RouteInstallResult(ok=False, error="unknown")
+
+
+def _post_json(url: str, body: bytes) -> RouteInstallResult:
+    """Blocking POST. Runs inside ``asyncio.to_thread``."""
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+            payload = resp.read().decode("utf-8", errors="replace") or "{}"
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return RouteInstallResult(ok=False, error=str(exc))
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        parsed = {}
+    if parsed.get("ok"):
+        return RouteInstallResult(ok=True, route=parsed.get("route"))
+    return RouteInstallResult(ok=False, error=parsed.get("error", "unknown error"))
+
+
 # ─── HTTP fetch + parse ───────────────────────────────────────────────
 
-def _agent_url(container_id: str, path: str) -> str | None:
-    """Compute the agent's URL for a container.
+def agent_url(container_id: str, path: str = "") -> str | None:
+    """Compute the router agent's URL for a container.
+
+    Public helper so other services (e.g. ``route_installer``) can
+    reach the same :9090 endpoint the panel uses. Returns ``None``
+    if the container isn't reachable from the backend (e.g. missing
+    or not attached to any routable network).
 
     We use the container's IP on the BACKEND_NETWORK so we can reach
     :9090 from the backend container. The default `bridge` (docker0)
@@ -219,6 +319,11 @@ def _agent_url(container_id: str, path: str) -> str | None:
         if ip:
             return f"http://{ip}:9090{path}"
     return None
+
+
+def _agent_url(container_id: str, path: str) -> str | None:
+    """Backwards-compatible alias for the public ``agent_url``."""
+    return agent_url(container_id, path)
 
 
 def _fetch_all(container_id: str) -> RouterState:

@@ -67,8 +67,16 @@ function CanvasNodeImpl({ data, selected }: NodeProps<CanvasNodeData>) {
   return (
     <div
       className={[
-        'min-w-[180px] rounded-lg overflow-hidden',
+        'min-w-[180px] rounded-lg overflow-visible',
         'bg-bg-surface border-2 transition-shadow duration-fast',
+        // Bug #49 part 2 — the React Flow Controls panel (z=5)
+        // and the MiniMap (z=5) sit on top of node handles that
+        // happen to render in the bottom-right region of the canvas
+        // and steal their pointer events. Lifting the node to z=20
+        // (above the panel) makes the handle click-reachable. We
+        // also flip `overflow-hidden` to `overflow-visible` so the
+        // handles can extend past the node's bounding box.
+        'relative z-20',
         borderClass,
       ].join(' ')}
     >
@@ -105,17 +113,57 @@ function CanvasNodeImpl({ data, selected }: NodeProps<CanvasNodeData>) {
               key={iface.id}
               className="relative flex items-center justify-between gap-2 h-7"
             >
+              {/* Each interface gets FOUR handles — a source and a
+                  target on BOTH the left and right side. This is the
+                  "wires always connect" fix (bug #49): with only one
+                  source on the left and one target on the right,
+                  dragging router(right-target)→host(left-target) is
+                  target→source which React Flow silently rejects.
+                  Giving every side both source + target roles means
+                  a drag from any side to any other side always
+                  produces a valid source→target pair. The source
+                  and target on the same side are stacked vertically
+                  (top: 40% / top: 60%) so both are hover-reachable
+                  — placing them at the exact same point would let
+                  only one win the pointer event. The link's
+                  sourceHandle/targetHandle stores the full handle
+                  id; the onConnect handler in Canvas.tsx strips
+                  the `::src_l` / `::src_r` / `::tgt_l` / `::tgt_r`
+                  suffix to recover the backend iface id. */}
+              {/* Render order matters: the LAST handle in DOM at a
+                  given position wins pointer events. We want the
+                  SOURCE to be on top so the user can click-and-drag
+                  it (the target is the drop receiver — it doesn't
+                  need to be clickable). So render target first,
+                  then source. Pair them: left-target, left-source,
+                  right-target, right-source. */}
               <Handle
-                id={iface.id}
-                type="source"
+                id={`${iface.id}::tgt_l`}
+                type="target"
                 position={Position.Left}
-                style={{ top: '50%', left: -4 }}
+                className="!w-2.5 !h-2.5 !bg-transparent !border-2 !border-accent"
+                style={{ top: '60%', left: -5 }}
               />
               <Handle
-                id={iface.id}
+                id={`${iface.id}::src_l`}
+                type="source"
+                position={Position.Left}
+                className="!w-2.5 !h-2.5 !bg-accent !border-2 !border-bg-surface"
+                style={{ top: '40%', left: -5 }}
+              />
+              <Handle
+                id={`${iface.id}::tgt_r`}
                 type="target"
                 position={Position.Right}
-                style={{ top: '50%', right: -4 }}
+                className="!w-2.5 !h-2.5 !bg-transparent !border-2 !border-accent"
+                style={{ top: '60%', right: -5 }}
+              />
+              <Handle
+                id={`${iface.id}::src_r`}
+                type="source"
+                position={Position.Right}
+                className="!w-2.5 !h-2.5 !bg-accent !border-2 !border-bg-surface"
+                style={{ top: '40%', right: -5 }}
               />
               <div className="text-xs text-text-secondary truncate pl-1">
                 {iface.name}

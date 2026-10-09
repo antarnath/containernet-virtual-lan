@@ -30,6 +30,16 @@ export interface PacketEvent {
   dst_port: number | null;
   length: number;
   summary: string;
+  /** M4 phase 08 — full decoded protocol layers (L2/L3/L4/L7)
+   *  parsed by the capture shim. Present when the browser
+   *  requests the full decode via the wire view's expand panel. */
+  raw?: {
+    l2?: Record<string, unknown>;
+    l3?: Record<string, unknown> | null;
+    l4?: Record<string, unknown> | null;
+    l7?: Record<string, unknown> | null;
+    arp?: Record<string, unknown> | null;
+  };
 }
 
 export type WireViewTab = 'raw' | 'conversations' | 'attackers';

@@ -39,7 +39,7 @@ export const ProjectsAPI = {
   },
   create: async (
     body: ProjectCreate,
-    template?: 'killer_demo',
+    template?: 'killer_demo' | 'dual_router',
   ): Promise<ProjectDetail> => {
     const url = template ? `/projects?template=${template}` : '/projects';
     const { data } = await api.post<ProjectDetail>(url, body);

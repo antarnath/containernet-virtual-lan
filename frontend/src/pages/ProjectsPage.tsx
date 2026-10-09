@@ -331,12 +331,12 @@ export default function ProjectsPage() {
       // ignore
     }
     const id = toast.info(
-      'New here? Try the killer demo',
-      '60s ARP-spoof MITM, no setup required.',
+      'New here? Try a demo',
+      'One-click ARP spoof, or a 2-router routed lab — both auto-start.',
       {
         action: {
-          label: 'Try it →',
-          onClick: () => void handleCreateDemo(),
+          label: 'Killer demo →',
+          onClick: () => void handleCreateDemo('killer_demo'),
         },
         durationMs: 12000,
       },
@@ -347,11 +347,12 @@ export default function ProjectsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, projects.length]);
 
-  async function handleCreateDemo() {
+  async function handleCreateDemo(template: 'killer_demo' | 'dual_router' = 'killer_demo') {
+    const name = template === 'dual_router' ? 'Dual Router Demo' : 'ARP Spoof Demo';
     try {
       const project = await ProjectsAPI.create(
-        { name: 'ARP Spoof Demo' },
-        'killer_demo',
+        { name },
+        template,
       );
       toast.success('Demo ready', 'Opening canvas…');
       // Refetch so the new project appears in the grid (the user may
@@ -373,8 +374,11 @@ export default function ProjectsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={handleCreateDemo}>
+          <Button variant="ghost" onClick={() => handleCreateDemo('killer_demo')}>
             ⚡ Killer demo
+          </Button>
+          <Button variant="ghost" onClick={() => handleCreateDemo('dual_router')}>
+            🔀 Dual router
           </Button>
           <Button variant="primary" onClick={() => setShowNew(true)}>
             + New project
@@ -424,8 +428,11 @@ export default function ProjectsPage() {
           description="Drag routers, switches, and hosts onto a blank canvas. The system materializes them as real Docker containers."
           action={
             <div className="flex gap-2">
-              <Button variant="accent" onClick={handleCreateDemo}>
-                ⚡ Try the killer demo
+              <Button variant="accent" onClick={() => handleCreateDemo('killer_demo')}>
+                ⚡ Killer demo
+              </Button>
+              <Button variant="ghost" onClick={() => handleCreateDemo('dual_router')}>
+                🔀 Dual router
               </Button>
               <Button variant="primary" onClick={() => setShowNew(true)}>
                 + New project

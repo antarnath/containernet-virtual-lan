@@ -217,6 +217,7 @@ export function LogsView() {
               <EventRow
                 key={e.id}
                 event={e}
+                projectId={projectId}
                 nodeName={
                   e.node_id ? nodeNamesById[e.node_id] ?? undefined : undefined
                 }

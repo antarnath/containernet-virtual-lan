@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
+import { AddInterfaceForm } from '../components/AddInterfaceForm';
 import {
   AnomalyBanner,
   Button,
@@ -17,9 +18,11 @@ import {
   LoadingSkeleton,
   StatusPill,
   Table,
+  toast,
   type TableColumn,
 } from '../components/ui';
 import { ProjectsAPI, type AnomalyEvent, type NodeLiveState } from '../api/client';
+import { useProjectStore } from '../store/projectStore';
 import { useRealtimeStore } from '../store/realtimeStore';
 
 type Tab = 'routes' | 'arp' | 'ifaces';
@@ -178,7 +181,11 @@ export function RouterPanel({
         ) : tab === 'arp' ? (
           <ArpTab neigh={state?.neigh ?? []} anomalies={anomalies} />
         ) : (
-          <IfacesTab ifaces={state?.ifaces ?? []} />
+          <IfacesTab
+            projectId={projectId}
+            nodeId={nodeId}
+            ifaces={state?.ifaces ?? []}
+          />
         )}
       </div>
 
@@ -253,14 +260,74 @@ function ArpTab({
   );
 }
 
-function IfacesTab({ ifaces }: { ifaces: IfaceRow[] }) {
+function IfacesTab({
+  projectId,
+  nodeId,
+  ifaces,
+}: {
+  projectId: string;
+  nodeId: string;
+  ifaces: IfaceRow[];
+}) {
+  // Pull the design-time interface list from the project store so
+  // the "+ Add interface" form has something to count against.
+  // The `ifaces` prop above is the live list from the agent.
+  const projectNode = useProjectStore((s) =>
+    s.current?.nodes.find((n) => n.id === nodeId),
+  );
+  const addInterface = useProjectStore((s) => s.addInterface);
+  const designIfaces = projectNode?.interfaces || [];
+
+  const [formOpen, setFormOpen] = useState(designIfaces.length === 0);
+
   const columns: TableColumn<IfaceRow>[] = [
     { key: 'name', label: 'Iface', mono: true, width: '24%' },
     { key: 'state', label: 'State', width: '18%' },
     { key: 'ip_mask', label: 'IP / Mask', mono: true, width: '32%' },
     { key: 'mac', label: 'MAC', mono: true, width: '26%' },
   ];
-  return <Table columns={columns} rows={ifaces} emptyMessage="no interfaces" />;
+
+  return (
+    <div className="space-y-3">
+      {formOpen ? (
+        <AddInterfaceForm
+          nodeKind="router"
+          canClose={designIfaces.length > 0}
+          onSubmit={async (body) => {
+            try {
+              await addInterface(projectId, nodeId, body);
+              toast.success(
+                'Interface added',
+                `${body.name} will appear live once the project is restarted.`,
+              );
+              if (designIfaces.length > 0) setFormOpen(false);
+            } catch (e) {
+              const msg =
+                (e as { response?: { data?: { detail?: unknown } } })?.response
+                  ?.data?.detail ?? (e as Error).message;
+              const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
+              toast.error('Could not add interface', text);
+              throw e;
+            }
+          }}
+        />
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setFormOpen(true)}
+        >
+          + Add interface
+        </Button>
+      )}
+      <Card>
+        <div className="text-2xs text-text-muted mb-2">
+          Live from the router agent.
+        </div>
+        <Table columns={columns} rows={ifaces} emptyMessage="no interfaces" />
+      </Card>
+    </div>
+  );
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────

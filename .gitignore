@@ -38,3 +38,11 @@ out/
 
 # ─── Internal planning docs (kept locally, not pushed) ───────
 phases/
+
+# ─── Debug artefacts (puppeteer screenshots, one-off probes) ──
+# These get regenerated whenever someone runs a `inspect-*.js`
+# script locally; not useful in version control.
+*.png
+inspect-*.js
+test-*.js
+ws-probe.py

@@ -9,6 +9,12 @@
 // realtime store's `packetsByLink` map; on every new packet whose
 // link_id matches this edge, we enqueue a 400ms dot animation.
 // Up to 5 dots can stack visually.
+//
+// M4 phase 08 — when a `message` event arrives, the realtime
+// store adds this edge's id to a 2.5s `link_expiries` map. The
+// wire then thickens, glows brighter, and shows a small
+// "📨 comm-…" badge to indicate the data is flowing across it.
+// When the trail expires the wire returns to its idle look.
 
 import { memo, useEffect, useRef, useState } from 'react';
 import {
@@ -17,7 +23,11 @@ import {
   getBezierPath,
   type EdgeProps,
 } from 'reactflow';
-import { useRealtimeStore, type RealtimePacketEvent } from '../store/realtimeStore';
+import {
+  useRealtimeStore,
+  type RealtimePacketEvent,
+  type MessageTrail,
+} from '../store/realtimeStore';
 
 // React Flow 11 doesn't export a `getPointOnBezier` helper, so we
 // replicate the same control-point math (see BezierEdge.js in
@@ -189,6 +199,72 @@ function CanvasEdgeImpl({
     return () => cancelAnimationFrame(raf);
   }, [dots.length]);
 
+  // ─── M4 phase 08 — live "data flowing" message trail ─────────
+  // Subscribe to the realtime store. For each render we look up
+  // any MessageTrail whose `link_expiries` still has `id` set
+  // and hasn't expired. We also re-render every 250ms while a
+  // trail is active so the glow fades smoothly.
+  const [activeTrail, setActiveTrail] = useState<{
+    trail: MessageTrail;
+    expires: number;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let tick: number | null = null;
+    const check = () => {
+      if (cancelled) return;
+      const now = Date.now();
+      const trails = useRealtimeStore.getState().messageTrails;
+      let best: { trail: MessageTrail; expires: number } | null = null;
+      for (const t of trails.values()) {
+        const exp = t.link_expiries.get(id);
+        if (exp != null && exp > now) {
+          if (!best || exp > best.expires) {
+            best = { trail: t, expires: exp };
+          }
+        }
+      }
+      setActiveTrail(best);
+      if (best) {
+        tick = window.setTimeout(check, 120);
+      }
+    };
+    check();
+    // Also re-check whenever the messageTrails map changes (a new
+    // message arrived).
+    const unsub = useRealtimeStore.subscribe((state, prev) => {
+      if (state.messageTrails !== prev.messageTrails) {
+        check();
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (tick) clearTimeout(tick);
+      unsub();
+    };
+  }, [id]);
+
+  const trailAgeMs = activeTrail
+    ? Math.max(0, 1 - (activeTrail.expires - Date.now()) / 2500)
+    : 1;
+  // Brightness ramps from 0 → 1 over the first 200ms then fades
+  // 1 → 0 over the remaining ~2.3s.
+  const trailIntensity = activeTrail
+    ? trailAgeMs < 0.08
+      ? trailAgeMs / 0.08
+      : 1 - (trailAgeMs - 0.08) / 0.92
+    : 0;
+  const trailGlow = activeTrail
+    ? `drop-shadow(0 0 ${8 + trailIntensity * 8}px ${color}cc)`
+    : selected
+      ? `drop-shadow(0 0 6px ${color}80)`
+      : `drop-shadow(0 0 2px ${color}40)`;
+  const trailStroke = activeTrail
+    ? Math.max(2, 2 + trailIntensity * 3)
+    : selected
+      ? 3
+      : 2;
+
   return (
     <>
       <BaseEdge
@@ -196,10 +272,9 @@ function CanvasEdgeImpl({
         path={edgePath}
         style={{
           stroke: color,
-          strokeWidth: selected ? 3 : 2,
-          filter: selected
-            ? `drop-shadow(0 0 6px ${color}80)`
-            : `drop-shadow(0 0 2px ${color}40)`,
+          strokeWidth: trailStroke,
+          filter: trailGlow,
+          transition: 'stroke-width 200ms ease, filter 200ms ease',
         }}
       />
       {/* Live packet dots — each one a 4×4 circle positioned along
@@ -241,10 +316,34 @@ function CanvasEdgeImpl({
             className={[
               'px-1.5 py-0.5 rounded text-2xs font-mono',
               'bg-bg-surface border',
-              'shadow-sm',
+              'shadow-sm flex items-center gap-1.5',
             ].join(' ')}
           >
             <span style={{ color }}>{data.subnet_cidr}</span>
+            {activeTrail && (
+              <span
+                className="text-2xs font-mono px-1 rounded bg-accent-soft text-accent border border-accent/40"
+                title={`Message ${activeTrail.trail.comm_id.slice(0, 8)} → ${activeTrail.trail.dst_ip} via ${activeTrail.trail.protocol}`}
+              >
+                📨 {activeTrail.trail.protocol}
+              </span>
+            )}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+      {!data?.subnet_cidr && activeTrail && (
+        // No subnet label, but a message is flowing — still surface
+        // a small badge above the link midpoint so the user sees it.
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: 'all',
+            }}
+            className="text-2xs font-mono px-1.5 py-0.5 rounded bg-accent-soft text-accent border border-accent/40 shadow-sm"
+          >
+            📨 {activeTrail.trail.protocol}
           </div>
         </EdgeLabelRenderer>
       )}

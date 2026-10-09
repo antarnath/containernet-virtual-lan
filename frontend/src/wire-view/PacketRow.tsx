@@ -6,6 +6,11 @@
 //   * When src_node_kind === 'attacker' → 2px `danger` left border
 //     and the chip's tone becomes `attack` (the "watch this" cue)
 //
+// M4 phase 08: a small chevron on the left lets the user click
+// the row to expand the full TCP/IP decode (rendered by
+// PacketDetail in the parent). The row is keyboard-clickable too
+// (Enter / Space toggles the expand) for accessibility.
+//
 // The row is purely presentational; the parent (PacketList) supplies
 // the layout and decides which rows are visible.
 
@@ -17,6 +22,10 @@ interface PacketRowProps {
   packet: PacketEvent;
   /** Cached label for the wire (e.g. "10.0.0.0/24"). Optional. */
   wireLabel?: string;
+  /** True when this row's expand panel is currently shown. */
+  isExpanded?: boolean;
+  /** Toggle the expand panel. */
+  onToggle?: () => void;
 }
 
 function formatTime(ts: string): string {
@@ -43,20 +52,37 @@ function endpointStr(p: PacketEvent): string {
   return p.summary || '(unknown)';
 }
 
-function PacketRowImpl({ packet, wireLabel }: PacketRowProps) {
+function PacketRowImpl({ packet, wireLabel, isExpanded, onToggle }: PacketRowProps) {
   const isAttack = packet.src_node_kind === 'attacker';
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onToggle?.();
+        }
+      }}
+      aria-expanded={!!isExpanded}
       className={[
-        'h-8 px-3 flex items-center gap-3 font-mono text-xs',
+        'h-8 px-3 flex items-center gap-3 font-mono text-xs cursor-pointer',
         'border-b border-border/40',
         'hover:bg-bg-surface-2 transition-colors duration-fast',
+        isExpanded ? 'bg-accent-soft/20' : '',
         isAttack
           ? 'border-l-2 border-l-danger bg-danger-soft/20'
           : 'border-l-2 border-l-transparent',
       ].join(' ')}
       data-pkt-id={packet.id}
     >
+      <span
+        className="w-6 text-text-muted select-none"
+        title={isExpanded ? 'Hide TCP/IP decode' : 'Show full TCP/IP decode'}
+      >
+        {isExpanded ? '▾' : '▸'}
+      </span>
       <span className="w-24 text-text-muted tabular-nums">
         {formatTime(packet.ts)}
       </span>

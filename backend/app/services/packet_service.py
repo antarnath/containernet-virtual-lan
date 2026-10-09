@@ -213,7 +213,7 @@ class PacketEvent:
     raw: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "id": self.id,
             "ts": self.ts,
             "ts_ns": self.ts_ns,
@@ -229,6 +229,14 @@ class PacketEvent:
             "length": self.length,
             "summary": self.summary,
         }
+        # M4 phase 08 — include the full decoded protocol layers
+        # (L2 / L3 / L4 / L7) so the wire view can render an
+        # "expand for full TCP/IP decode" view per packet. The shim
+        # already parses these (see host-agent/capture_shim.py), so
+        # shipping them is just a matter of not throwing them away.
+        if self.raw:
+            d["raw"] = self.raw
+        return d
 
 
 # ─── stream (the SSE consumer side) ────────────────────────────────────
@@ -377,15 +385,99 @@ def remember_packet(project_id: str, ev: PacketEvent) -> None:
 
 
 def get_recent_packets(project_id: str, link_id: str | None = None, limit: int = 20) -> list[dict]:
-    """Return recent packets for one link (or all links in the project)."""
+    """Return recent packets for one link (or all links in the project).
+
+    Falls back to reading the most recent N lines from the per-link
+    NDJSON capture file when the in-memory ring buffer is empty
+    (e.g. just after a backend restart, or before any SSE client has
+    connected). The MAC table lookup is reused so the response shape
+    matches what the SSE stream emits — including ``raw`` (the full
+    L2/L3/L4/L7 decode the user clicks to expand).
+    """
     out: list[dict] = []
     if link_id is not None:
         out = list(_recent.get((project_id, link_id), []))
     else:
         for v in _recent.values():
             out.extend(v)
+    # If the in-memory buffer is empty (cold start, or no SSE client
+    # has been attached), fall back to the NDJSON file. We pull the
+    # last ``limit`` lines of each relevant link's file so the
+    # caller gets something useful immediately.
+    if not out:
+        out = _tail_ndjson(project_id, link_id, limit)
     out.sort(key=lambda p: p.get("ts_ns") or 0)
     return out[-limit:]
+
+
+def _tail_ndjson(project_id: str, link_id: str | None, limit: int) -> list[dict]:
+    """Read the last ``limit`` lines of each relevant link's NDJSON
+    capture file and return parsed PacketEvent dicts.
+
+    Cheap (a single read of the last 64 KB), correct enough for a
+    "what just happened on this wire" snapshot. The MAC table is
+    consulted so the src_node_kind is filled in like the SSE stream
+    does.
+    """
+    mac_table = get_project_mac_table(project_id)
+    out: list[dict] = []
+    try:
+        from app.core.config import settings
+        # We need the project's links to find the right files. Read
+        # the link list from the DB — a small extra query, but
+        # this is the cold-start path and we're not on a hot loop.
+        from sqlalchemy import select
+        from app.models import ProjectLink
+        # Async session can't be used here (this function is sync).
+        # Use a sync fallback by scanning the captures directory.
+        captures_dir = "/var/lib/containernet/captures"
+        import os
+        import json as _json
+        short_p = project_id.replace("-", "")[:8]
+        if link_id is not None:
+            short_l = link_id.replace("-", "")[:4]
+            files = [os.path.join(captures_dir, f"{short_p}l{short_l}.ndjson")]
+        else:
+            # All files for this project.
+            files = []
+            for fn in os.listdir(captures_dir):
+                if fn.startswith(short_p + "l") and fn.endswith(".ndjson"):
+                    files.append(os.path.join(captures_dir, fn))
+        for path in files:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            # Read last up-to-128KB so we get a reasonable window.
+            window = min(size, 128 * 1024)
+            try:
+                with open(path, "rb") as f:
+                    if size > window:
+                        f.seek(size - window)
+                    data = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in data.splitlines()[-limit:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                # Derive link_id from the file name so downstream
+                # consumers can group by link.
+                fname = os.path.basename(path)
+                try:
+                    l_id = fname[len(short_p) + 1 :].rsplit(".ndjson", 1)[0]
+                except Exception:
+                    l_id = ""
+                ev = _to_event(raw, l_id, mac_table)
+                if ev is not None:
+                    out.append(ev.to_dict())
+    except Exception:
+        log.debug("[packet_service] _tail_ndjson fallback failed", exc_info=True)
+    return out
 
 
 def reset_recent(project_id: str) -> None:

@@ -51,6 +51,7 @@ from app.services import (
     link_service,
     node_service,
     packet_service,
+    route_installer,
 )
 
 log = logging.getLogger(__name__)
@@ -227,6 +228,17 @@ async def start_project(
     anomaly_detector.start_polling(project.id)
     # M4 phase 06 — start polling attackers for signal detection.
     attack_detector.start_polling(project.id)
+    # M4 phase 09 — install inter-router static routes so multi-router
+    # topologies can reach each other's LANs. We do this AFTER status
+    # flips to RUNNING so a failed install doesn't roll the whole
+    # project back; the user can fix individual routes via the panel.
+    try:
+        await route_installer.install_inter_router_routes(project)
+    except Exception:
+        log.exception(
+            "[lifecycle] route installation crashed for project %s",
+            project.id,
+        )
     return result
 
 

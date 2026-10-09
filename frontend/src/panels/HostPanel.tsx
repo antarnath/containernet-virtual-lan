@@ -9,9 +9,11 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, LoadingSkeleton, StatusPill, Table } from '../components/ui';
+import { AddInterfaceForm } from '../components/AddInterfaceForm';
+import { Button, LoadingSkeleton, StatusPill, Table, toast } from '../components/ui';
 import { TriggerAPI } from '../trigger/api';
 import { TriggerPanel } from '../trigger/TriggerPanel';
+import { useProjectStore } from '../store/projectStore';
 import type { MessageRow } from '../trigger/types';
 import type { ProjectNode } from '../types';
 
@@ -122,46 +124,70 @@ function InterfacesTab({
   node: ProjectNode;
   containerStatus: string;
 }) {
-  if (containerStatus !== 'running') {
-    return (
-      <div className="p-6 text-2xs text-text-muted text-center">
-        Container is not running. Start the project to see live
-        interface state.
-      </div>
-    );
-  }
-
   const ifaces = node.interfaces || [];
-  if (ifaces.length === 0) {
-    return (
-      <div className="p-6 text-2xs text-text-muted text-center">
-        No interfaces on this node. Add one from the project
-        editor.
-      </div>
-    );
-  }
+  const addInterface = useProjectStore((s) => s.addInterface);
+  const [formOpen, setFormOpen] = useState(ifaces.length === 0);
 
   return (
-    <div className="p-3">
-      <Table
-        columns={[
-          { key: 'name', label: 'Name', mono: true },
-          { key: 'ip_mask', label: 'IP / mask', mono: true },
-          { key: 'mac', label: 'MAC', mono: true },
-        ]}
-        rows={ifaces.map((i) => ({
-          id: i.id,
-          name: i.name,
-          ip_mask: i.ip_address
-            ? `${i.ip_address}${i.subnet_mask || ''}`
-            : '—',
-          mac: i.mac_address || '—',
-        }))}
-        emptyMessage="No interfaces."
-      />
+    <div className="p-3 space-y-3">
+      {containerStatus !== 'running' && (
+        <div className="text-2xs text-text-muted text-center py-2">
+          Container is not running. Start the project to see live
+          interface state.
+        </div>
+      )}
+
+      {formOpen ? (
+        <AddInterfaceForm
+          nodeKind={node.kind}
+          canClose={ifaces.length > 0}
+          onSubmit={async (body) => {
+            try {
+              await addInterface(node.project_id, node.id, body);
+              toast.success('Interface added', `${body.name} is ready to wire.`);
+              if (ifaces.length > 0) setFormOpen(false);
+            } catch (e) {
+              const msg =
+                (e as { response?: { data?: { detail?: unknown } } })?.response
+                  ?.data?.detail ?? (e as Error).message;
+              const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
+              toast.error('Could not add interface', text);
+              throw e;
+            }
+          }}
+        />
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setFormOpen(true)}
+        >
+          + Add interface
+        </Button>
+      )}
+
+      {ifaces.length > 0 && (
+        <Table
+          columns={[
+            { key: 'name', label: 'Name', mono: true },
+            { key: 'ip_mask', label: 'IP / mask', mono: true },
+            { key: 'mac', label: 'MAC', mono: true },
+          ]}
+          rows={ifaces.map((i) => ({
+            id: i.id,
+            name: i.name,
+            ip_mask: i.ip_address
+              ? `${i.ip_address}${i.subnet_mask || ''}`
+              : '—',
+            mac: i.mac_address || '—',
+          }))}
+        />
+      )}
     </div>
   );
 }
+
+// ─── messages tab ─────────────────────────────────────────────────────
 
 function MessagesTab({ projectId, nodeId }: { projectId: string; nodeId: string }) {
   const [rows, setRows] = useState<MessageRow[] | null>(null);

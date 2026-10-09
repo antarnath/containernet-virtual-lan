@@ -17,6 +17,10 @@
 //   { type: "packet", id, link_id, protocol, src_node_kind, ... }
 //     ← broadcast from the per-link packet streamer so the canvas
 //       can animate a dot along the wire each time a packet crosses.
+//   { type: "message", comm_id, src_node_id, dst_node_id, dst_ip,
+//     protocol, payload, status, hops_crossed, delivered_at }
+//     ← fired by the backend after every communication_service.send_message
+//       so the canvas can highlight the per-link hop trail in real time.
 //   { type: "event", id, project_id, ts, kind, summary, detail, ... }
 //     ← fires from event_service for lifecycle / node / link / bridge
 //       / message / anomaly / attack_signal / error events. This is
@@ -33,7 +37,18 @@ export interface RealtimePacketEvent {
   src_node_kind: string;
   src_ip?: string;
   dst_ip?: string;
+  src_port?: number | null;
+  dst_port?: number | null;
   ts_ns?: number;
+  /** M4 phase 08 — full decoded protocol layers when the
+   *  backend includes them (SSE per-link stream always does; WS
+   *  broadcasts include them when we have the data). */
+  raw?: {
+    l2?: Record<string, unknown>;
+    l3?: Record<string, unknown> | null;
+    l4?: Record<string, unknown> | null;
+    l7?: Record<string, unknown> | null;
+  };
 }
 
 export interface RealtimeAttackSignal {
@@ -47,12 +62,45 @@ export interface RealtimeAttackSignal {
   created_at: string;
 }
 
+/** M4 phase 08 — message event broadcast over the project WS
+ *  after every send_message. The canvas watches `hops_crossed`
+ *  to draw the live "data flowing" trail along each link. */
+export interface RealtimeMessageEvent {
+  comm_id: string;
+  src_node_id: string;
+  src_node_name?: string;
+  dst_node_id: string | null;
+  dst_ip: string;
+  protocol: string;
+  payload: string;
+  status: 'delivered' | 'failed' | 'unreachable';
+  hops_crossed: string[]; // link_ids
+  delivered_at: string | null;
+}
+
 const PACKET_RING_SIZE = 20;
 const SIGNAL_RING_SIZE = 50;
 const EVENT_RING_SIZE = 200;
 const ACTIVE_ATTACKER_TIMEOUT_MS = 10_000;
+/** How long a wire glows on the canvas after a message traverses
+ *  it (the live "data flowing" effect). The hop_list and comm_id
+ *  let the canvas label the glow. */
+const MESSAGE_TRAIL_MS = 2_500;
 type PacketRing = Map<string, RealtimePacketEvent[]>;
 type AttackSignalsByAttacker = Map<string, RealtimeAttackSignal[]>;
+
+/** M4 phase 08 — one in-flight message hop trail. Each link the
+ *  message crossed has its own expiry so the canvas can fade
+ *  them in sequence. */
+export interface MessageTrail {
+  comm_id: string;
+  src_node_id: string;
+  dst_node_id: string | null;
+  dst_ip: string;
+  protocol: string;
+  /** link_id → expiry timestamp (ms epoch) */
+  link_expiries: Map<string, number>;
+}
 
 interface RealtimeState {
   /** Current project (null when not on a project page). */
@@ -76,6 +124,11 @@ interface RealtimeState {
   /** Most recent N packets per link (newest last), for the canvas
    *  dot animation. Cleared on disconnect. */
   packetsByLink: PacketRing;
+  /** M4 phase 08 — most recent message trails, keyed by comm_id.
+   *  A canvas wire whose id is in any trail's `link_expiries`
+   *  (with expiry in the future) should glow to indicate the
+   *  message is flowing across it. */
+  messageTrails: Map<string, MessageTrail>;
 
   // ─── lifecycle ──────────────────────────────────────────────
   connect: (projectId: string) => void;
@@ -87,15 +140,23 @@ interface RealtimeState {
   _ingestPacket: (ev: RealtimePacketEvent) => void;
   _ingestAttackSignal: (ev: RealtimeAttackSignal) => void;
   _ingestEvent: (ev: ProjectEventRow) => void;
+  _ingestMessage: (ev: RealtimeMessageEvent) => void;
   pruneActiveAttackers: () => void;
+  /** Drop expired link_expiries from every trail. Called by the
+   *  canvas on a 250ms timer. */
+  pruneMessageTrails: () => void;
 }
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 
-function wsUrlFor(projectId: string): string {
+function wsUrlFor(_projectId: string): string {
+  // M4 phase 03 — single global WS at /api/ws. The client subscribes
+  // to a project by sending `{type: "subscribe", project_id}` after
+  // onopen (see backend/app/api/websocket.py). The path doesn't carry
+  // the project id.
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}/api/ws/projects/${projectId}`;
+  return `${proto}://${window.location.host}/api/ws`;
 }
 
 function scheduleReconnect(projectId: string) {
@@ -124,19 +185,38 @@ function openSocket(projectId: string) {
   ws = socket;
   socket.onopen = () => {
     useRealtimeStore.setState({ wsState: 'open' });
+    // The backend (/ws) routes project-scoped events only to sockets
+    // that have explicitly subscribed (see backend/app/api/websocket.py).
+    // The subscribe envelope must be sent right after onopen — without
+    // it, the server will never deliver anomaly / attack_signal /
+    // message / event broadcasts to this client.
+    try {
+      socket.send(JSON.stringify({ type: 'subscribe', project_id: projectId }));
+    } catch {
+      // Best-effort: onclose will fire and we'll reconnect.
+    }
   };
   socket.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       if (!msg || typeof msg !== 'object') return;
-      if (msg.type === 'anomaly') {
-        useRealtimeStore.getState()._ingestTestEvent(msg as AnomalyEvent);
-      } else if (msg.type === 'packet') {
-        useRealtimeStore.getState()._ingestPacket(msg as RealtimePacketEvent);
-      } else if (msg.type === 'attack_signal') {
-        useRealtimeStore.getState()._ingestAttackSignal(msg as RealtimeAttackSignal);
-      } else if (msg.type === 'event') {
-        useRealtimeStore.getState()._ingestEvent(msg as ProjectEventRow);
+      // The server publishes events wrapped in a standard envelope
+      // (see app/ws/events.py): {type, project_id, data, ts}. The
+      // domain event lives in `data` (with its own `type` field),
+      // so we unwrap before dispatching to the typed handlers.
+      const inner = (msg.data && typeof msg.data === 'object' && msg.data.type)
+        ? msg.data
+        : msg;
+      if (inner.type === 'anomaly') {
+        useRealtimeStore.getState()._ingestTestEvent(inner as AnomalyEvent);
+      } else if (inner.type === 'packet') {
+        useRealtimeStore.getState()._ingestPacket(inner as RealtimePacketEvent);
+      } else if (inner.type === 'attack_signal') {
+        useRealtimeStore.getState()._ingestAttackSignal(inner as RealtimeAttackSignal);
+      } else if (inner.type === 'event') {
+        useRealtimeStore.getState()._ingestEvent(inner as ProjectEventRow);
+      } else if (inner.type === 'message') {
+        useRealtimeStore.getState()._ingestMessage(inner as RealtimeMessageEvent);
       }
     } catch {
       // ignore malformed
@@ -164,6 +244,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
   wsState: 'idle',
   dismissedIds: new Set(),
   packetsByLink: new Map(),
+  messageTrails: new Map(),
 
   connect: (projectId) => {
     const prev = get().projectId;
@@ -178,6 +259,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       events: [],
       dismissedIds: new Set(),
       packetsByLink: new Map(),
+      messageTrails: new Map(),
     });
     // Pull a fresh snapshot from the REST endpoint so the UI has the
     // full history on connect, not just whatever the WS happens to
@@ -219,6 +301,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       events: [],
       wsState: 'idle',
       packetsByLink: new Map(),
+      messageTrails: new Map(),
     });
   },
 
@@ -286,6 +369,57 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       if (s.events.some((e) => e.id === ev.id)) return s;
       const next = [ev, ...s.events].slice(0, EVENT_RING_SIZE);
       return { events: next };
+    });
+  },
+
+  _ingestMessage: (ev) => {
+    if (!ev || !ev.comm_id) return;
+    // Build a per-link expiry map. Each link the message crossed
+    // gets a 2.5s glow so the user can see the data flowing.
+    const link_expiries = new Map<string, number>();
+    const expires = Date.now() + MESSAGE_TRAIL_MS;
+    for (const lid of ev.hops_crossed || []) {
+      link_expiries.set(lid, expires);
+    }
+    const trail: MessageTrail = {
+      comm_id: ev.comm_id,
+      src_node_id: ev.src_node_id,
+      dst_node_id: ev.dst_node_id,
+      dst_ip: ev.dst_ip,
+      protocol: ev.protocol,
+      link_expiries,
+    };
+    set((s) => {
+      const next = new Map(s.messageTrails);
+      next.set(ev.comm_id, trail);
+      // Cap the trail buffer at 8 most-recent to keep memory bounded.
+      if (next.size > 8) {
+        const first = next.keys().next().value;
+        if (first !== undefined) next.delete(first);
+      }
+      return { messageTrails: next };
+    });
+  },
+
+  pruneMessageTrails: () => {
+    const now = Date.now();
+    set((s) => {
+      let mutated = false;
+      const next = new Map(s.messageTrails);
+      for (const [commId, trail] of next.entries()) {
+        let stillActive = false;
+        for (const exp of trail.link_expiries.values()) {
+          if (exp > now) {
+            stillActive = true;
+            break;
+          }
+        }
+        if (!stillActive) {
+          next.delete(commId);
+          mutated = true;
+        }
+      }
+      return mutated ? { messageTrails: next } : s;
     });
   },
 

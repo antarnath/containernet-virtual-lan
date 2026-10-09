@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
+from app.api import websocket as websocket_router
 from app.core import init_db
 from app.core import docker_client, settings
 from app.services import anomaly_detector, attack_detector, orphan_sweeper
@@ -59,6 +60,11 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+# M4 phase 03 — single global WebSocket at /ws. The browser opens
+# ONE connection per tab, then sends {type: "subscribe", project_id}
+# to receive events for the project the user is currently viewing
+# (see backend/app/api/websocket.py for the protocol).
+app.include_router(websocket_router.router)
 
 
 @app.get("/healthz")

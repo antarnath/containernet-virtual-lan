@@ -128,6 +128,26 @@ async def broadcast_project_event(project_id: str, payload: dict[str, Any]) -> N
             except Exception as exc:
                 log.debug("[realtime] subscriber %s enqueue failed: %s", sid, exc)
 
+    # M4 phase 07 — also fan out to the new single-WS-per-tab
+    # manager (see app/ws/events.py). The legacy realtime.py
+    # route still works for the old clients, but the unified
+    # ``/ws`` route subscribes via this manager and needs the
+    # same broadcast to reach its subscribers. We import here
+    # to avoid a circular import at module load time.
+    try:
+        from app.ws.events import manager
+        from datetime import datetime, timezone
+        # Wrap into the standard envelope the manager publishes.
+        envelope = {
+            "type": payload.get("type", "event"),
+            "project_id": project_id,
+            "data": payload,
+            "ts": payload.get("ts") or datetime.now(timezone.utc).isoformat(),
+        }
+        await manager.broadcast_to_project(project_id, envelope)
+    except Exception as exc:
+        log.debug("[realtime] fan-out to ws manager failed (non-fatal): %s", exc)
+
 
 def connected_count(project_id: str) -> int:
     return len(_clients.get(project_id, {}))

@@ -144,13 +144,22 @@ class RouterHandler(BaseHTTPRequestHandler):
         dst = body.get("dst")
         via = body.get("via")
         dev = body.get("dev")
-        if not dst or not dev:
-            self._send_json({"ok": False, "error": "dst and dev are required"}, 400)
+        if not dst:
+            self._send_json({"ok": False, "error": "dst is required"}, 400)
+            return
+        if not via and not dev:
+            # The kernel can resolve either the next-hop via or the
+            # outgoing interface, but needs at least one of them to
+            # make sense of the destination.
+            self._send_json(
+                {"ok": False, "error": "via or dev is required"}, 400,
+            )
             return
         cmd = ["ip", "route", "replace", dst]
         if via:
             cmd += ["via", via]
-        cmd += ["dev", dev]
+        if dev:
+            cmd += ["dev", dev]
         rc, out, err = _run(cmd)
         if rc != 0:
             self._send_json({"ok": False, "error": err.strip() or out.strip()}, 400)

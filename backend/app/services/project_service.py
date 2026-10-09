@@ -746,3 +746,213 @@ async def create_killer_demo(session: AsyncSession) -> Project:
     )
 
     return project
+
+
+# ─── Dual-router demo (phase 09 — multi-router routing) ───────────────
+
+DUAL_ROUTER_DEMO_NAME = "Dual Router Demo"
+
+
+async def create_dual_router_demo(session: AsyncSession) -> Project:
+    """Two routers connected back-to-back, each with a LAN of hosts.
+
+    Topology (everything on /29 — Docker needs >=6 usable host slots
+    per bridge to fit the bridge's own gateway, and /29 gives exactly
+    that). We use 192.168.x for the LANs and 10.99.x for the
+    router-to-router uplink to avoid overlapping with the backend's
+    ``containernet_lan`` (10.10.0.0/24) and the killer demo
+    (10.30.10.0/29).
+
+      LAN-A (Router-1)                    LAN-B (Router-2)
+      ──────────────────                  ──────────────────
+      host-1   192.168.10.2/29  ↔ eth0 .1   host-4   192.168.20.2/29  ↔ eth0 .1
+      host-2   192.168.10.10/29 ↔ eth1 .9   host-5   192.168.20.10/29 ↔ eth1 .9
+      host-3   192.168.10.18/29 ↔ eth2 .17  host-6   192.168.20.18/29 ↔ eth2 .17
+                                            host-7   192.168.20.26/29 ↔ eth3 .25
+
+      Router-1 eth3 10.99.0.1/29  ────  Router-2 eth4 10.99.0.2/29
+                                       (router-router uplink; gateway
+                                       auto-picks as 10.99.0.6)
+
+    Cross-router: host-1 ↔ Router-1 → Router-2 → host-4 takes 3 hops.
+    The router agent installs default routes that forward across
+    /29 subnets on each LAN and across the /29 uplink.
+    """
+    project = await create_project(
+        session,
+        ProjectCreateIn(name=DUAL_ROUTER_DEMO_NAME),
+    )
+
+    # Place Router-1 on the left, Router-2 on the right. Hosts fan
+    # out below their router.
+    router1 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.ROUTER.value,
+            name="Router-1",
+            canvas_x=200,
+            canvas_y=250,
+        ),
+    )
+    router2 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.ROUTER.value,
+            name="Router-2",
+            canvas_x=700,
+            canvas_y=250,
+        ),
+    )
+    host1 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-1",
+            canvas_x=50, canvas_y=80,
+        ),
+    )
+    host2 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-2",
+            canvas_x=200, canvas_y=80,
+        ),
+    )
+    host3 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-3",
+            canvas_x=350, canvas_y=80,
+        ),
+    )
+    host4 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-4",
+            canvas_x=550, canvas_y=80,
+        ),
+    )
+    host5 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-5",
+            canvas_x=700, canvas_y=80,
+        ),
+    )
+    host6 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-6",
+            canvas_x=850, canvas_y=80,
+        ),
+    )
+    host7 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value, name="Host-7",
+            canvas_x=1000, canvas_y=80,
+        ),
+    )
+
+    # ── Router-1 interfaces ─────────────────────────────────────
+    # eth0/eth1/eth2 for the 3 hosts on LAN-A, eth3 for the uplink.
+    r1_h1 = await add_interface(
+        session, project.id, router1.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.10.1", subnet_mask="/29"),
+    )
+    r1_h2 = await add_interface(
+        session, project.id, router1.id,
+        ProjectInterfaceCreateIn(name="eth1", ip_address="192.168.10.9", subnet_mask="/29"),
+    )
+    r1_h3 = await add_interface(
+        session, project.id, router1.id,
+        ProjectInterfaceCreateIn(name="eth2", ip_address="192.168.10.17", subnet_mask="/29"),
+    )
+    r1_uplink = await add_interface(
+        session, project.id, router1.id,
+        ProjectInterfaceCreateIn(name="eth3", ip_address="10.99.0.1", subnet_mask="/29"),
+    )
+
+    # ── Router-2 interfaces ─────────────────────────────────────
+    # eth0..eth3 for the 4 hosts on LAN-B, eth4 for the uplink.
+    r2_h4 = await add_interface(
+        session, project.id, router2.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.20.1", subnet_mask="/29"),
+    )
+    r2_h5 = await add_interface(
+        session, project.id, router2.id,
+        ProjectInterfaceCreateIn(name="eth1", ip_address="192.168.20.9", subnet_mask="/29"),
+    )
+    r2_h6 = await add_interface(
+        session, project.id, router2.id,
+        ProjectInterfaceCreateIn(name="eth2", ip_address="192.168.20.17", subnet_mask="/29"),
+    )
+    r2_h7 = await add_interface(
+        session, project.id, router2.id,
+        ProjectInterfaceCreateIn(name="eth3", ip_address="192.168.20.25", subnet_mask="/29"),
+    )
+    r2_uplink = await add_interface(
+        session, project.id, router2.id,
+        ProjectInterfaceCreateIn(name="eth4", ip_address="10.99.0.2", subnet_mask="/29"),
+    )
+
+    # ── Host interfaces ─────────────────────────────────────────
+    h1_if = await add_interface(
+        session, project.id, host1.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.10.2", subnet_mask="/29"),
+    )
+    h2_if = await add_interface(
+        session, project.id, host2.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.10.10", subnet_mask="/29"),
+    )
+    h3_if = await add_interface(
+        session, project.id, host3.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.10.18", subnet_mask="/29"),
+    )
+    h4_if = await add_interface(
+        session, project.id, host4.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.20.2", subnet_mask="/29"),
+    )
+    h5_if = await add_interface(
+        session, project.id, host5.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.20.10", subnet_mask="/29"),
+    )
+    h6_if = await add_interface(
+        session, project.id, host6.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.20.18", subnet_mask="/29"),
+    )
+    h7_if = await add_interface(
+        session, project.id, host7.id,
+        ProjectInterfaceCreateIn(name="eth0", ip_address="192.168.20.26", subnet_mask="/29"),
+    )
+
+    # ── Wires (8 total) ─────────────────────────────────────────
+    # LAN-A
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h1_if.id, iface_b_id=r1_h1.id))
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h2_if.id, iface_b_id=r1_h2.id))
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h3_if.id, iface_b_id=r1_h3.id))
+    # LAN-B
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h4_if.id, iface_b_id=r2_h4.id))
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h5_if.id, iface_b_id=r2_h5.id))
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h6_if.id, iface_b_id=r2_h6.id))
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=h7_if.id, iface_b_id=r2_h7.id))
+    # Router-to-router uplink (the only inter-router wire)
+    await add_link(session, project.id,
+                    ProjectLinkCreateIn(iface_a_id=r1_uplink.id, iface_b_id=r2_uplink.id))
+
+    return project
