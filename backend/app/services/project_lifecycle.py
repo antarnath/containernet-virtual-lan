@@ -136,6 +136,12 @@ async def start_project(
                 summary=f"Bridge create failed: {exc}",
                 detail={"link_id": link.id, "phase": "bridge_create"},
             )
+            # M4 phase 09 bug fix — _set_error()'s rollback loop walks
+            # project.links and calls delete_bridge_for_link on each
+            # one whose docker_bridge_name was set earlier in this
+            # start. That's enough to clean up the bridges that
+            # succeeded in this loop, so we don't need a separate
+            # pass here.
             await _set_error(session, project, result, "start")
             return result
 

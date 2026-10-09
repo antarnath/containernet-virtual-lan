@@ -219,13 +219,23 @@ async def send_message(
     # LogsView shows this message in the same timeline.
     try:
         from app.services import event_service
+        # Resolve the destination node name for the log summary.
+        # `dst_node_id` may be None (the user only gave us an IP and
+        # no in-project match was found) or a stale id (the project
+        # changed since the route was resolved). In either case fall
+        # back to the IP so the row still gets written.
+        dst_node_name = dst_ip
+        if dst_node_id:
+            dst_node_obj = _node_by_id(project, dst_node_id)
+            if dst_node_obj is not None:
+                dst_node_name = dst_node_obj.name
         await event_service.emit_message_sent(
             session,
             project_id,
             src_node_id=src_node_id,
             src_node_name=src_node.name,
             dst_node_id=dst_node_id or "",
-            dst_node_name=dst_node.name if dst_node else dst_ip,
+            dst_node_name=dst_node_name,
             protocol=protocol,
             detail_extra={
                 "comm_id": comm_id,
