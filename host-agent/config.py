@@ -26,9 +26,18 @@ class Config:
     # Exposed ports
     METRICS_PORT: int = int(os.getenv("METRICS_PORT", "9100"))
     MESSAGE_PORT: int = int(os.getenv("MESSAGE_PORT", "8080"))
+    # M4 phase 06 — attacker-only. The agent starts the attack control
+    # server on this port only when AGENT_ROLE=attacker.
+    ATTACK_CONTROL_PORT: int = int(os.getenv("ATTACK_CONTROL_PORT", "9092"))
 
     # Timing
     HEARTBEAT_INTERVAL_SEC: int = int(os.getenv("HEARTBEAT_INTERVAL_SEC", "5"))
+
+    # M4 phase 06 — role + attack mode. Both default to None on a
+    # non-attacker container. ATTACK_MODE is the *initial* mode the
+    # container was spawned with; the user can override via the panel.
+    AGENT_ROLE: str | None = os.getenv("AGENT_ROLE") or None
+    ATTACK_MODE: str | None = os.getenv("ATTACK_MODE") or None
 
 
 config = Config()

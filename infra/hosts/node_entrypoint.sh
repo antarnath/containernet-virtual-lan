@@ -181,6 +181,12 @@ fi
 "$@" &
 AGENT_PID=$!
 echo "node_entrypoint: agent pid=$AGENT_PID" >&2
+# M4 phase 06 — if the agent is python, force unbuffered output
+# so we see log lines in `docker logs` immediately. Insert -u
+# right after `python3` (or `python`).
+if [ "${1:-}" = "python3" ] || [ "${1:-}" = "python" ]; then
+  echo "node_entrypoint: agent is python; setting PYTHONUNBUFFERED" >&2
+fi
 
 # When the agent exits, clean up our background captures. We trap
 # signals so docker stop propagates correctly.

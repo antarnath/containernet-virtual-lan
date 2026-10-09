@@ -27,6 +27,8 @@ export interface CanvasNodeData {
   interfaces: ProjectInterface[];
   /** Phase 03: this node has an open anomaly. */
   has_anomaly?: boolean;
+  /** Phase 06: this attacker has an active signal in the last 10s. */
+  has_active_attack?: boolean;
 }
 
 // Map a kind to the design-system text class for the silhouette.
@@ -48,13 +50,16 @@ const STATUS_TONE: Record<ContainerStatus, 'idle' | 'starting' | 'running' | 'er
 };
 
 function CanvasNodeImpl({ data, selected }: NodeProps<CanvasNodeData>) {
-  const { kind, name, container_status, attack_mode, interfaces, has_anomaly } = data;
+  const { kind, name, container_status, attack_mode, interfaces, has_anomaly, has_active_attack } = data;
   const anomaly = !!has_anomaly;
+  const attacking = !!has_active_attack;
 
-  // Border + outline priority: selected > anomaly > hover. The
-  // anomaly state is sticky and survives selection.
+  // Border + outline priority: selected > attack > anomaly > hover.
+  // The attack state is sticky and survives selection/anomaly.
   const borderClass = selected
     ? 'border-accent shadow-glow-accent'
+    : attacking
+    ? 'border-danger shadow-glow-danger animate-pulse'
     : anomaly
     ? 'border-warn'
     : 'border-border hover:border-border-strong shadow-md';

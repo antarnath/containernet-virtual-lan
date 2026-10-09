@@ -32,6 +32,12 @@ from app.models.anomaly_event import (
 )
 # M4 phase 05 — communication / message log
 from app.models.communication import Communication
+# M4 phase 06 — attack signals
+from app.models.attack_signal import (
+    AttackSignal,
+    AttackSignalKind,
+    SIGNAL_THRESHOLDS,
+)
 
 __all__ = [
     "Base",
@@ -46,4 +52,6 @@ __all__ = [
     "AnomalyEvent", "AnomalyKind", "AnomalySeverity",
     # M4 phase 05
     "Communication",
+    # M4 phase 06
+    "AttackSignal", "AttackSignalKind", "SIGNAL_THRESHOLDS",
 ]

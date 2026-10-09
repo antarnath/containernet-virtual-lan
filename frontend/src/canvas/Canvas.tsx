@@ -74,6 +74,7 @@ export interface OpenNodePayload {
 function nodeToFlow(
   n: ProjectNode,
   hasAnomaly: boolean,
+  hasActiveAttack: boolean,
 ): Node<CanvasNodeData> {
   return {
     id: n.id,
@@ -86,6 +87,7 @@ function nodeToFlow(
       attack_mode: n.attack_mode,
       interfaces: n.interfaces,
       has_anomaly: hasAnomaly,
+      has_active_attack: hasActiveAttack,
     },
   };
 }
@@ -140,6 +142,7 @@ function CanvasInner({
   // re-renders the affected nodes when the WS delivers a new event.
   const anomalies = useRealtimeStore((s) => s.anomalies);
   const dismissedIds = useRealtimeStore((s) => s.dismissedIds);
+  const activeAttackers = useRealtimeStore((s) => s.activeAttackers);
   const anomalousNodeIds = useMemo(() => {
     const s = new Set<string>();
     for (const a of anomalies) {
@@ -158,13 +161,22 @@ function CanvasInner({
 
   // Hydrate from the project store on first mount + whenever the
   // server-side state changes. Also re-runs when the anomaly set
-  // changes so the warn outline appears/disappears in real time.
+  // changes so the warn outline appears/disappears in real time,
+  // and when the active-attacker set changes (phase 06 — red ring).
   useEffect(() => {
     if (!current) return;
     if (current.id !== projectId) return;
-    setNodes(current.nodes.map((n) => nodeToFlow(n, anomalousNodeIds.has(n.id))));
+    setNodes(
+      current.nodes.map((n) =>
+        nodeToFlow(
+          n,
+          anomalousNodeIds.has(n.id),
+          activeAttackers.has(n.id),
+        ),
+      ),
+    );
     setEdges(current.links.map(linkToFlow));
-  }, [current, projectId, anomalousNodeIds]);
+  }, [current, projectId, anomalousNodeIds, activeAttackers]);
 
   // If the project is missing on first mount, fetch it.
   useEffect(() => {

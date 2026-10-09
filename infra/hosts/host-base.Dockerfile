@@ -22,9 +22,12 @@ RUN apk add --no-cache \
 # Install the Host Agent's Python dependencies.
 # These go in the base image so each per-host Dockerfile doesn't reinstall.
 # --break-system-packages is required for Alpine's PEP 668 restriction.
+# M4 phase 06 — scapy is needed by the attack engine (arp_spoof, etc).
+# aiohttp is already a dep for the message service.
 RUN pip3 install --no-cache-dir --break-system-packages \
         aiohttp \
-        prometheus-client
+        prometheus-client \
+        scapy
 
 # Default working directory
 WORKDIR /app

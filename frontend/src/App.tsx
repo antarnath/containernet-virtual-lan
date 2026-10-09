@@ -17,6 +17,7 @@ import Dashboard from './pages/Dashboard';
 import ProjectsPage from './pages/ProjectsPage';
 import ProjectCanvas from './pages/ProjectCanvas';
 import WireView from './pages/WireView';
+import { AttacksView } from './attacks/AttacksView';
 
 export default function App() {
   return (
@@ -32,6 +33,10 @@ export default function App() {
           <Route
             path="/projects/:projectId/wires/:linkId"
             element={<WireView />}
+          />
+          <Route
+            path="/projects/:projectId/attacks"
+            element={<AttacksView />}
           />
         </Route>
       </Routes>

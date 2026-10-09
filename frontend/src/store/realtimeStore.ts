@@ -11,6 +11,9 @@
 // The WS protocol (server → client):
 //   { type: "anomaly", id, node_id, kind, severity, summary,
 //     detail, created_at, resolved_at }
+//   { type: "attack_signal", id, attacker_node_id, victim_node_id,
+//     signal_kind, value, threshold, window_sec, created_at }
+//     ← fires when the backend's attack_detector writes a row.
 //   { type: "packet", id, link_id, protocol, src_node_kind, ... }
 //     ← broadcast from the per-link packet streamer so the canvas
 //       can animate a dot along the wire each time a packet crosses.
@@ -29,14 +32,33 @@ export interface RealtimePacketEvent {
   ts_ns?: number;
 }
 
+export interface RealtimeAttackSignal {
+  id: string;
+  attacker_node_id: string;
+  victim_node_id?: string | null;
+  signal_kind: 'arp_rate' | 'syn_rate' | 'http_rate' | 'new_mac' | 'duplicate_ip';
+  value: number;
+  threshold: number;
+  window_sec: number;
+  created_at: string;
+}
+
 const PACKET_RING_SIZE = 20;
+const SIGNAL_RING_SIZE = 50;
+const ACTIVE_ATTACKER_TIMEOUT_MS = 10_000;
 type PacketRing = Map<string, RealtimePacketEvent[]>;
+type AttackSignalsByAttacker = Map<string, RealtimeAttackSignal[]>;
 
 interface RealtimeState {
   /** Current project (null when not on a project page). */
   projectId: string | null;
   /** Live anomaly events, newest first. */
   anomalies: AnomalyEvent[];
+  /** Live attack signals, newest first, bucketed per attacker. */
+  attackSignals: AttackSignalsByAttacker;
+  /** Attacker IDs that have produced at least one signal in the last
+   *  ACTIVE_ATTACKER_TIMEOUT_MS — drives the canvas red ring. */
+  activeAttackers: Set<string>;
   /** WS connection state. */
   wsState: 'idle' | 'connecting' | 'open' | 'closed';
   /** IDs the user has dismissed (locally). We strip them out of the
@@ -55,6 +77,8 @@ interface RealtimeState {
   // ─── test seam ──────────────────────────────────────────────
   _ingestTestEvent: (ev: AnomalyEvent) => void;
   _ingestPacket: (ev: RealtimePacketEvent) => void;
+  _ingestAttackSignal: (ev: RealtimeAttackSignal) => void;
+  pruneActiveAttackers: () => void;
 }
 
 let ws: WebSocket | null = null;
@@ -100,6 +124,8 @@ function openSocket(projectId: string) {
         useRealtimeStore.getState()._ingestTestEvent(msg as AnomalyEvent);
       } else if (msg.type === 'packet') {
         useRealtimeStore.getState()._ingestPacket(msg as RealtimePacketEvent);
+      } else if (msg.type === 'attack_signal') {
+        useRealtimeStore.getState()._ingestAttackSignal(msg as RealtimeAttackSignal);
       }
     } catch {
       // ignore malformed
@@ -121,6 +147,8 @@ function openSocket(projectId: string) {
 export const useRealtimeStore = create<RealtimeState>((set, get) => ({
   projectId: null,
   anomalies: [],
+  attackSignals: new Map(),
+  activeAttackers: new Set(),
   wsState: 'idle',
   dismissedIds: new Set(),
   packetsByLink: new Map(),
@@ -133,6 +161,8 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
     set({
       projectId,
       anomalies: [],
+      attackSignals: new Map(),
+      activeAttackers: new Set(),
       dismissedIds: new Set(),
       packetsByLink: new Map(),
     });
@@ -161,7 +191,14 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       try { ws.close(); } catch { /* noop */ }
       ws = null;
     }
-    set({ projectId: null, anomalies: [], wsState: 'idle', packetsByLink: new Map() });
+    set({
+      projectId: null,
+      anomalies: [],
+      attackSignals: new Map(),
+      activeAttackers: new Set(),
+      wsState: 'idle',
+      packetsByLink: new Map(),
+    });
   },
 
   dismissAnomaly: async (id) => {
@@ -204,6 +241,50 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       }
       next.set(ev.link_id, updated);
       return { packetsByLink: next };
+    });
+  },
+
+  _ingestAttackSignal: (ev) => {
+    if (!ev || !ev.id || !ev.attacker_node_id) return;
+    set((s) => {
+      const next = new Map(s.attackSignals);
+      const bucket = next.get(ev.attacker_node_id) ?? [];
+      // Dedup by id (WS may race the REST snapshot).
+      if (bucket.some((x) => x.id === ev.id)) return s;
+      const updated = [ev, ...bucket].slice(0, SIGNAL_RING_SIZE);
+      next.set(ev.attacker_node_id, updated);
+      const active = new Set(s.activeAttackers);
+      active.add(ev.attacker_node_id);
+      return { attackSignals: next, activeAttackers: active };
+    });
+  },
+
+  pruneActiveAttackers: () => {
+    // Called periodically by the UI; we keep attackers "active" for
+    // ACTIVE_ATTACKER_TIMEOUT_MS after their last signal. The actual
+    // timestamps are tracked in the signal list; this is a coarse
+    // sweep that clears attackers whose most recent signal is older
+    // than the timeout.
+    const cutoff = Date.now() - ACTIVE_ATTACKER_TIMEOUT_MS;
+    set((s) => {
+      let mutated = false;
+      const active = new Set(s.activeAttackers);
+      for (const id of active) {
+        const bucket = s.attackSignals.get(id);
+        if (!bucket || bucket.length === 0) {
+          active.delete(id);
+          mutated = true;
+          continue;
+        }
+        const last = bucket[0]?.created_at;
+        if (!last) continue;
+        const t = new Date(last).getTime();
+        if (t < cutoff) {
+          active.delete(id);
+          mutated = true;
+        }
+      }
+      return mutated ? { activeAttackers: active } : s;
     });
   },
 }));

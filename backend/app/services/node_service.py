@@ -362,6 +362,10 @@ def spawn_node(
             env["DEFAULT_GATEWAY_IP"] = gw_ip
         if gw_iface:
             env["DEFAULT_GATEWAY_IFACE"] = gw_iface
+    # M4 phase 06 — force unbuffered Python output so the agent's
+    # log lines appear in `docker logs` immediately. Without this
+    # the buffer holds the messages until the container stops.
+    env["PYTHONUNBUFFERED"] = "1"
 
     labels = {
         LABEL_HOST.split("=")[0]: "true",
@@ -393,6 +397,11 @@ def spawn_node(
     }
     if kind == NodeKind.ROUTER:
         extra_kwargs["sysctls"] = {"net.ipv4.ip_forward": 1}
+    # M4 phase 06 — attackers expose the attack-control HTTP server on
+    # 9092. The backend's attack_proxy reaches it via the shared
+    # backend network. We bind 0.0.0.0:9092 → 9092/tcp.
+    if kind == NodeKind.ATTACKER:
+        extra_kwargs["ports"] = {"9092/tcp": 9092}
 
     try:
         container = client.containers.run(

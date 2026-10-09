@@ -35,9 +35,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import get_session
-from app.models import AnomalyEvent, NodeKind
+from app.models import AnomalyEvent, AttackSignal, NodeKind, ProjectNode
 from app.services import (
     anomaly_detector,
+    attack_detector,
+    attack_proxy,
     communication_service,
     packet_service,
     project_lifecycle,
@@ -876,6 +878,175 @@ async def list_messages(
         session, project_id, node_id=node_id, limit=limit
     )
     return {"project_id": project_id, "node_id": node_id, "messages": rows}
+
+
+# ─── Phase 06 — Attacks view ─────────────────────────────────────────
+
+
+@router.get("/{project_id}/attacks")
+async def list_attacks(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """List every attacker-kind node in the project, with its live
+    engine state (fetched from :9092/state). Newest project order
+    — the canvas adds new nodes; we don't sort here."""
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    out: list[dict] = []
+    for n in project.nodes:
+        kind_val = n.kind.value if hasattr(n.kind, "value") else n.kind
+        if kind_val != NodeKind.ATTACKER.value:
+            continue
+        # Lazy import to avoid the docker-client cost on the hot path.
+        state = await attack_proxy.attacker_state(n, session)
+        out.append({
+            "node_id": n.id,
+            "name": n.name,
+            "container_id": n.container_id,
+            "container_status": n.container_status,
+            "attack_mode": n.attack_mode,
+            "state": state,
+        })
+    return {"project_id": project_id, "attacks": out}
+
+
+@router.get("/{project_id}/attacks/{attacker_node_id}/signals")
+async def list_attack_signals(
+    project_id: str,
+    attacker_node_id: str,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+):
+    """Newest-first signal log for one attacker. Capped at 200 rows
+    for sanity; the frontend keeps a 50-row in-memory ring anyway."""
+    limit = max(1, min(limit, 200))
+    stmt = (
+        select(AttackSignal)
+        .where(
+            AttackSignal.project_id == project_id,
+            AttackSignal.attacker_node_id == attacker_node_id,
+        )
+        .order_by(AttackSignal.created_at.desc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {
+        "project_id": project_id,
+        "attacker_node_id": attacker_node_id,
+        "signals": [r.to_dict() for r in rows],
+    }
+
+
+@router.post("/{project_id}/attacks/{attacker_node_id}/start")
+async def start_attack(
+    project_id: str,
+    attacker_node_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """Start the attacker's engine in the given mode against the
+    given target IP. Body: {"mode": "<mode>", "target_ip": "<ip>"}.
+
+    Validates that the attacker node is kind=attacker and has a
+    running container. The proxy forwards to :9092/attack.
+    """
+    mode = body.get("mode")
+    target_ip = body.get("target_ip")
+    target_node_id = body.get("target_node_id")
+    if not mode or not isinstance(mode, str):
+        raise HTTPException(status_code=400, detail="mode required")
+    # If target_node_id is given (preferred), resolve to its primary
+    # interface IP. The user might pass target_ip directly for
+    # advanced use (e.g. broadcasting to 10.255.255.255).
+    if not target_ip and target_node_id:
+        from sqlalchemy.orm import selectinload as _si
+        stmt = (
+            select(ProjectNode)
+            .where(ProjectNode.id == target_node_id)
+            .where(ProjectNode.project_id == project_id)
+            .options(_si(ProjectNode.interfaces))
+        )
+        target_node = (await session.execute(stmt)).scalars().first()
+        if target_node is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"target_node_id {target_node_id} not found in project",
+            )
+        if not target_node.interfaces:
+            raise HTTPException(
+                status_code=422,
+                detail="target node has no interfaces",
+            )
+        target_ip = target_node.interfaces[0].ip_address
+    if not target_ip or not isinstance(target_ip, str):
+        raise HTTPException(
+            status_code=400,
+            detail="target_ip or target_node_id required",
+        )
+    attacker = await _get_attacker_node(session, project_id, attacker_node_id)
+    if attacker is None:
+        raise HTTPException(
+            status_code=404, detail="attacker not found in project"
+        )
+    if not attacker.container_id:
+        raise HTTPException(
+            status_code=409,
+            detail="attacker container is not running — start the project first",
+        )
+    result = await attack_proxy.start_attack(attacker, mode, target_ip)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"attacker rejected start: {result.get('error')}",
+        )
+    return result
+
+
+@router.post("/{project_id}/attacks/{attacker_node_id}/stop")
+async def stop_attack(
+    project_id: str,
+    attacker_node_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Stop the attacker's engine. No body."""
+    attacker = await _get_attacker_node(session, project_id, attacker_node_id)
+    if attacker is None:
+        raise HTTPException(
+            status_code=404, detail="attacker not found in project"
+        )
+    result = await attack_proxy.stop_attack(attacker)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"attacker rejected stop: {result.get('error')}",
+        )
+    return result
+
+
+async def _get_attacker_node(
+    session: AsyncSession, project_id: str, attacker_node_id: str
+):
+    """Fetch the attacker node by id within the project, ensuring
+    it's kind=attacker. Returns None if not found or wrong kind."""
+    from sqlalchemy.orm import selectinload
+
+    stmt = (
+        select(ProjectNode)
+        .where(
+            ProjectNode.id == attacker_node_id,
+            ProjectNode.project_id == project_id,
+        )
+        .options(selectinload(ProjectNode.interfaces))
+    )
+    node = (await session.execute(stmt)).scalars().first()
+    if node is None:
+        return None
+    kind_val = node.kind.value if hasattr(node.kind, "value") else node.kind
+    if kind_val != NodeKind.ATTACKER.value:
+        return None
+    return node
 
 
 # ─── helpers ──────────────────────────────────────────────────────────

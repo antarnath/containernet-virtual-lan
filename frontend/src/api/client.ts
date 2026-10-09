@@ -232,6 +232,57 @@ export const ProjectsAPI = {
       return data;
     },
   },
+
+  // ─── Attacks (phase 06) ───────────────────────────────────────
+  attacks: {
+    list: async (
+      projectId: string,
+    ): Promise<{ project_id: string; attacks: AttackRecord[] }> => {
+      const { data } = await api.get<{
+        project_id: string;
+        attacks: AttackRecord[];
+      }>(`/projects/${projectId}/attacks`);
+      return data;
+    },
+    signals: async (
+      projectId: string,
+      attackerId: string,
+      limit = 50,
+    ): Promise<{
+      project_id: string;
+      attacker_node_id: string;
+      signals: AttackSignalRow[];
+    }> => {
+      const { data } = await api.get<{
+        project_id: string;
+        attacker_node_id: string;
+        signals: AttackSignalRow[];
+      }>(`/projects/${projectId}/attacks/${attackerId}/signals`, {
+        params: { limit },
+      });
+      return data;
+    },
+    start: async (
+      projectId: string,
+      attackerId: string,
+      body: AttackStartBody,
+    ): Promise<{ ok: boolean; state?: AttackerState; error?: string }> => {
+      const { data } = await api.post<{ ok: boolean; state?: AttackerState; error?: string }>(
+        `/projects/${projectId}/attacks/${attackerId}/start`,
+        body,
+      );
+      return data;
+    },
+    stop: async (
+      projectId: string,
+      attackerId: string,
+    ): Promise<{ ok: boolean; state?: AttackerState; error?: string }> => {
+      const { data } = await api.post<{ ok: boolean; state?: AttackerState; error?: string }>(
+        `/projects/${projectId}/attacks/${attackerId}/stop`,
+      );
+      return data;
+    },
+  },
 };
 
 export default api;
@@ -285,4 +336,49 @@ export interface NodeLiveState {
     fetched_at: number;
     error: string | null;
   } | null;
+}
+
+// ─── Phase 06 — attack surface shapes ───────────────────────────
+
+export type AttackMode =
+  | 'unknown_host'
+  | 'duplicate_ip'
+  | 'arp_spoof'
+  | 'tcp_flood'
+  | 'http_flood';
+
+export interface AttackerState {
+  running: boolean;
+  mode: AttackMode | null;
+  target_ip: string | null;
+  packets_sent: number;
+  packets_per_sec: number;
+  started_at: string | null;
+}
+
+export interface AttackRecord {
+  node_id: string;
+  name: string;
+  container_id: string | null;
+  container_status: string;
+  attack_mode: AttackMode | null;
+  state: AttackerState;
+}
+
+export interface AttackSignalRow {
+  id: string;
+  project_id: string;
+  attacker_node_id: string;
+  victim_node_id: string | null;
+  signal_kind: 'arp_rate' | 'syn_rate' | 'http_rate' | 'new_mac' | 'duplicate_ip';
+  value: number;
+  threshold: number;
+  window_sec: number;
+  created_at: string | null;
+}
+
+export interface AttackStartBody {
+  mode: AttackMode;
+  target_node_id?: string;
+  target_ip?: string;
 }

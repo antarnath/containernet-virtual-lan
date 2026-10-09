@@ -20,6 +20,7 @@ import { Canvas, type OpenNodePayload } from '../canvas';
 import { ProjectsAPI } from '../api/client';
 import { RouterPanel } from '../panels/RouterPanel';
 import { HostPanel } from '../panels/HostPanel';
+import { AttackerPanel } from '../attacks/AttackerPanel';
 import { TriggerPanel } from '../trigger/TriggerPanel';
 import type { ProjectDetail, ProjectStatus } from '../types';
 
@@ -198,6 +199,15 @@ export default function ProjectCanvas() {
             {current.node_count} node{current.node_count === 1 ? '' : 's'} ·{' '}
             {current.link_count} wire{current.link_count === 1 ? '' : 's'}
           </div>
+          {current.nodes?.some((n) => n.kind === 'attacker') && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate(`/projects/${current.id}/attacks`)}
+            >
+              ⚠ Attacks
+            </Button>
+          )}
           <Button
             variant="accent"
             size="sm"
@@ -261,7 +271,17 @@ export default function ProjectCanvas() {
             onClose={handleClosePanel}
           />
         )}
-        {openNode && openNode.nodeKind !== 'router' && openNode.nodeKind !== 'switch' && (
+        {openNode && openNode.nodeKind === 'attacker' && (
+          <AttackerPanel
+            projectId={current.id}
+            nodeId={openNode.nodeId}
+            nodeName={openNode.nodeName}
+            containerStatus={openNode.containerStatus}
+            nodes={current.nodes}
+            onClose={handleClosePanel}
+          />
+        )}
+        {openNode && openNode.nodeKind !== 'router' && openNode.nodeKind !== 'switch' && openNode.nodeKind !== 'attacker' && (
           <HostPanel
             projectId={current.id}
             nodeId={openNode.nodeId}
