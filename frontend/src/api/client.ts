@@ -37,8 +37,12 @@ export const ProjectsAPI = {
     const { data } = await api.get<ProjectDetail>(`/projects/${projectId}`);
     return data;
   },
-  create: async (body: ProjectCreate): Promise<ProjectDetail> => {
-    const { data } = await api.post<ProjectDetail>('/projects', body);
+  create: async (
+    body: ProjectCreate,
+    template?: 'killer_demo',
+  ): Promise<ProjectDetail> => {
+    const url = template ? `/projects?template=${template}` : '/projects';
+    const { data } = await api.post<ProjectDetail>(url, body);
     return data;
   },
   update: async (

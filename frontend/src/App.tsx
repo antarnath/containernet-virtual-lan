@@ -19,32 +19,35 @@ import ProjectCanvas from './pages/ProjectCanvas';
 import WireView from './pages/WireView';
 import { AttacksView } from './attacks/AttacksView';
 import { LogsView } from './logs/LogsView';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/projects" element={<ProjectsPage />} />
-          <Route
-            path="/projects/:projectId/canvas"
-            element={<ProjectCanvas />}
-          />
-          <Route
-            path="/projects/:projectId/wires/:linkId"
-            element={<WireView />}
-          />
-          <Route
-            path="/projects/:projectId/attacks"
-            element={<AttacksView />}
-          />
-          <Route
-            path="/projects/:projectId/logs"
-            element={<LogsView />}
-          />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/projects" element={<ProjectsPage />} />
+            <Route
+              path="/projects/:projectId/canvas"
+              element={<ProjectCanvas />}
+            />
+            <Route
+              path="/projects/:projectId/wires/:linkId"
+              element={<WireView />}
+            />
+            <Route
+              path="/projects/:projectId/attacks"
+              element={<AttacksView />}
+            />
+            <Route
+              path="/projects/:projectId/logs"
+              element={<LogsView />}
+            />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

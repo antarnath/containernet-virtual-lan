@@ -181,13 +181,38 @@ def _link_out(l) -> ProjectLinkOut:
 )
 async def create_project(
     body: ProjectCreateIn,
+    template: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
-    """Create a new (empty) project. The canvas starts blank."""
-    try:
-        project = await project_service.create_project(session, body)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    """Create a new project. The canvas starts blank unless
+    ``?template=killer_demo`` is passed, in which case the project
+    is pre-populated with the ARP-spoof MITM demo topology AND
+    auto-started (so the user lands on a running canvas).
+
+    The template parameter is a single-endpoint exception to the
+    "no templates" rule: it's a one-click demo, not a template the
+    user picks from. The user can never browse to a template they
+    didn't ask for.
+    """
+    if template == "killer_demo":
+        project = await project_service.create_killer_demo(session)
+    else:
+        try:
+            project = await project_service.create_project(session, body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    # Auto-start the killer demo so the user lands on a running canvas.
+    # Best-effort: if start fails (e.g. docker issue), still return the
+    # created project so the user can retry manually.
+    if template == "killer_demo":
+        try:
+            from app.services import project_lifecycle
+            await project_lifecycle.start_project(session, project.id)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "[api] killer demo auto-start failed for %s", project.id,
+            )
     project = await project_service.get_project(session, project.id)
     assert project is not None
     return ProjectDetailOut(

@@ -20,6 +20,8 @@ export interface ToastItem {
   message?: string;
   /** Auto-dismiss after this many ms. 0 = sticky. Default 4000. */
   duration?: number;
+  /** Optional CTA rendered on the right of the toast body. */
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastStore {
@@ -53,8 +55,19 @@ const DEFAULTS: Record<ToastKind, Pick<ToastItem, 'duration'>> = {
 };
 
 export const toast = {
-  info: (title: string, message?: string) =>
-    useToastStore.getState().push({ kind: 'info', title, message, ...DEFAULTS.info }),
+  info: (
+    title: string,
+    message?: string,
+    opts?: { action?: { label: string; onClick: () => void }; durationMs?: number },
+  ) =>
+    useToastStore.getState().push({
+      kind: 'info',
+      title,
+      message,
+      ...DEFAULTS.info,
+      ...(opts?.action ? { action: opts.action } : {}),
+      ...(opts?.durationMs ? { duration: opts.durationMs } : {}),
+    }),
   success: (title: string, message?: string) =>
     useToastStore.getState().push({ kind: 'success', title, message, ...DEFAULTS.success }),
   warning: (title: string, message?: string) =>
@@ -103,6 +116,18 @@ function ToastRow({ item, onDismiss }: { item: ToastItem; onDismiss: (id: string
           <div className="text-xs text-text-secondary mt-0.5 break-words">
             {item.message}
           </div>
+        )}
+        {item.action && (
+          <button
+            type="button"
+            onClick={() => {
+              item.action!.onClick();
+              onDismiss(item.id);
+            }}
+            className="text-2xs font-mono uppercase tracking-wider text-accent hover:text-text-primary mt-1.5"
+          >
+            {item.action.label}
+          </button>
         )}
       </div>
       <button

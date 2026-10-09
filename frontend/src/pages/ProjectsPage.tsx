@@ -11,11 +11,17 @@
 // creates an empty project (no template — the user is the engineer).
 // New projects land directly in /canvas so the user can start
 // dropping nodes.
+//
+// First-time UX: when the user lands on this page with no projects
+// and no `visited` flag in localStorage, a one-time cyan toast
+// suggests the killer demo. Clicking the button creates the demo
+// project and opens its canvas.
 
 import { useEffect, useState, useRef, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useProjectStore } from '../store/projectStore';
+import { ProjectsAPI } from '../api/client';
 import { toast } from '../components/ui';
 import {
   Button,
@@ -27,6 +33,8 @@ import {
 } from '../components/ui';
 import { NodeIcon } from '../components/icons';
 import type { Project, ProjectStatus } from '../types';
+
+const DEMO_TOAST_KEY = 'containernet.killer_demo_toast_shown';
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
@@ -304,6 +312,57 @@ export default function ProjectsPage() {
     void fetchProjects();
   }, [fetchProjects]);
 
+  // First-time UX: if the user has never visited AND there are no
+  // projects yet, show the cyan "Try the killer demo" toast once.
+  useEffect(() => {
+    if (loading) return;
+    if (projects.length > 0) return;
+    if (typeof window === 'undefined') return;
+    let alreadyShown = false;
+    try {
+      alreadyShown = window.localStorage.getItem(DEMO_TOAST_KEY) === '1';
+    } catch {
+      // ignore — private mode etc.
+    }
+    if (alreadyShown) return;
+    try {
+      window.localStorage.setItem(DEMO_TOAST_KEY, '1');
+    } catch {
+      // ignore
+    }
+    const id = toast.info(
+      'New here? Try the killer demo',
+      '60s ARP-spoof MITM, no setup required.',
+      {
+        action: {
+          label: 'Try it →',
+          onClick: () => void handleCreateDemo(),
+        },
+        durationMs: 12000,
+      },
+    );
+    return () => {
+      toast.dismiss(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, projects.length]);
+
+  async function handleCreateDemo() {
+    try {
+      const project = await ProjectsAPI.create(
+        { name: 'ARP Spoof Demo' },
+        'killer_demo',
+      );
+      toast.success('Demo ready', 'Opening canvas…');
+      // Refetch so the new project appears in the grid (the user may
+      // close the canvas and come back).
+      void fetchProjects();
+      navigate(`/projects/${project.id}/canvas`);
+    } catch (err) {
+      toast.error('Demo failed', (err as Error).message);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -313,9 +372,14 @@ export default function ProjectsPage() {
             Each project is its own network canvas. Open one to drop hosts, switches, routers, and wires.
           </p>
         </div>
-        <Button variant="primary" onClick={() => setShowNew(true)}>
-          + New project
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={handleCreateDemo}>
+            ⚡ Killer demo
+          </Button>
+          <Button variant="primary" onClick={() => setShowNew(true)}>
+            + New project
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -356,12 +420,17 @@ export default function ProjectsPage() {
               <path d="M8 14h8" />
             </svg>
           }
-          title="No projects yet"
-          description="Start with a blank canvas. You'll add hosts, switches, routers, and wires yourself — there are no templates."
+          title="Build your first network"
+          description="Drag routers, switches, and hosts onto a blank canvas. The system materializes them as real Docker containers."
           action={
-            <Button variant="primary" onClick={() => setShowNew(true)}>
-              + New project
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="accent" onClick={handleCreateDemo}>
+                ⚡ Try the killer demo
+              </Button>
+              <Button variant="primary" onClick={() => setShowNew(true)}>
+                + New project
+              </Button>
+            </div>
           }
         />
       )}

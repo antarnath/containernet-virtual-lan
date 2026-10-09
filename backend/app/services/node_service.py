@@ -399,9 +399,11 @@ def spawn_node(
         extra_kwargs["sysctls"] = {"net.ipv4.ip_forward": 1}
     # M4 phase 06 — attackers expose the attack-control HTTP server on
     # 9092. The backend's attack_proxy reaches it via the shared
-    # backend network. We bind 0.0.0.0:9092 → 9092/tcp.
-    if kind == NodeKind.ATTACKER:
-        extra_kwargs["ports"] = {"9092/tcp": 9092}
+    # backend network (containernet_lan), so we do NOT publish the
+    # host port — multiple attackers in different projects would
+    # otherwise collide on 0.0.0.0:9092. To debug an individual
+    # attacker, the user can `docker port <container>` or
+    # `docker exec ... curl localhost:9092/state`.
 
     try:
         container = client.containers.run(

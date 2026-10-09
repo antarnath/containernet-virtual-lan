@@ -575,3 +575,162 @@ async def stop_project(session: AsyncSession, project_id: str) -> Any:
     raise NotImplementedError(
         "stop_project ships in Milestone 4 phase 02 (router + bridges)"
     )
+
+
+# ─── Killer demo (phase 08) ─────────────────────────────────────────────
+
+KILLER_DEMO_NAME = "ARP Spoof Demo"
+
+
+async def create_killer_demo(session: AsyncSession) -> Project:
+    """One-click project that demonstrates ARP-spoof MITM in 60s.
+
+    Star topology, three separate /29 subnets (one per link). We use
+    /29 (6 usable hosts) instead of /30 (2 usable hosts) because
+    link_service derives the bridge gateway from the network's last
+    host, and a /30 with two hosts has no spare address for a gateway
+    — Docker refuses with "Pool overlaps".
+
+      Router-1   10.30.10.1   on eth0
+      Host-1     10.30.10.2   on eth0
+      Host-2     10.30.10.9   on eth0
+      Attacker-1 10.30.10.17  on eth0 (attack_mode = arp_spoof)
+
+    Wires:
+      Host-1    ↔ Router-1   (10.30.10.0/29)
+      Host-2    ↔ Router-1   (10.30.10.8/29)
+      Attacker-1 ↔ Router-1  (10.30.10.16/29)
+
+    This is a "single-endpoint exception" to the "no templates" rule —
+    it's a one-click demo, not a template the user picks from. The
+    user can never browse to a template they didn't ask for.
+    """
+    project = await create_project(
+        session,
+        ProjectCreateIn(name=KILLER_DEMO_NAME),
+    )
+
+    # Add nodes with explicit canvas positions so the demo lands
+    # readable.
+    router = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.ROUTER.value,
+            name="Router-1",
+            canvas_x=400,
+            canvas_y=200,
+        ),
+    )
+    host1 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value,
+            name="Host-1",
+            canvas_x=200,
+            canvas_y=300,
+        ),
+    )
+    host2 = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.HOST.value,
+            name="Host-2",
+            canvas_x=600,
+            canvas_y=300,
+        ),
+    )
+    attacker = await add_node(
+        session,
+        project.id,
+        ProjectNodeCreateIn(
+            kind=NodeKind.ATTACKER.value,
+            name="Attacker-1",
+            canvas_x=400,
+            canvas_y=450,
+            attack_mode="arp_spoof",
+        ),
+    )
+
+    # Add interfaces — star topology: 3 separate /29 subnets so each
+    # link gets its own bridge. (Docker refuses two networks on the
+    # same subnet, and link_service needs a spare address for the
+    # bridge gateway, so /29 is the minimum practical per-link size.)
+    #     Host-1    ↔ Router-1 : 10.30.10.0/29  (router .1, host .2, gw .6)
+    #     Host-2    ↔ Router-1 : 10.30.10.8/29  (router .9, host .10, gw .14)
+    #     Attacker  ↔ Router-1 : 10.30.10.16/29 (router .17, att .18, gw .22)
+    router_h1 = await add_interface(
+        session,
+        project.id,
+        router.id,
+        ProjectInterfaceCreateIn(
+            name="eth0", ip_address="10.30.10.1", subnet_mask="/29",
+        ),
+    )
+    router_h2 = await add_interface(
+        session,
+        project.id,
+        router.id,
+        ProjectInterfaceCreateIn(
+            name="eth1", ip_address="10.30.10.9", subnet_mask="/29",
+        ),
+    )
+    router_att = await add_interface(
+        session,
+        project.id,
+        router.id,
+        ProjectInterfaceCreateIn(
+            name="eth2", ip_address="10.30.10.17", subnet_mask="/29",
+        ),
+    )
+    host1_iface = await add_interface(
+        session,
+        project.id,
+        host1.id,
+        ProjectInterfaceCreateIn(
+            name="eth0", ip_address="10.30.10.2", subnet_mask="/29",
+        ),
+    )
+    host2_iface = await add_interface(
+        session,
+        project.id,
+        host2.id,
+        ProjectInterfaceCreateIn(
+            name="eth0", ip_address="10.30.10.10", subnet_mask="/29",
+        ),
+    )
+    attacker_iface = await add_interface(
+        session,
+        project.id,
+        attacker.id,
+        ProjectInterfaceCreateIn(
+            name="eth0", ip_address="10.30.10.18", subnet_mask="/29",
+        ),
+    )
+
+    # Star topology: 3 wires, all router ↔ node.
+    await add_link(
+        session,
+        project.id,
+        ProjectLinkCreateIn(
+            iface_a_id=host1_iface.id, iface_b_id=router_h1.id,
+        ),
+    )
+    await add_link(
+        session,
+        project.id,
+        ProjectLinkCreateIn(
+            iface_a_id=host2_iface.id, iface_b_id=router_h2.id,
+        ),
+    )
+    await add_link(
+        session,
+        project.id,
+        ProjectLinkCreateIn(
+            iface_a_id=attacker_iface.id, iface_b_id=router_att.id,
+        ),
+    )
+
+    return project

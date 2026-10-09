@@ -22,6 +22,7 @@ import { RouterPanel } from '../panels/RouterPanel';
 import { HostPanel } from '../panels/HostPanel';
 import { AttackerPanel } from '../attacks/AttackerPanel';
 import { TriggerPanel } from '../trigger/TriggerPanel';
+import { ShortcutsModal } from '../components/ShortcutsModal';
 import type { ProjectDetail, ProjectStatus } from '../types';
 
 const STATUS_TONE: Record<ProjectStatus, 'idle' | 'draft' | 'starting' | 'running' | 'partial' | 'stopped' | 'error'> = {
@@ -78,6 +79,23 @@ export default function ProjectCanvas() {
 
   // Whether the trigger modal is open (header "+ Send" button).
   const [triggerOpen, setTriggerOpen] = useState(false);
+  // Whether the keyboard shortcuts modal is open (the `?` key).
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
+  // Global ? key — opens the shortcuts modal. The keydown is captured
+  // here (not in the modal) so the modal itself is closed by Escape.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+        e.preventDefault();
+        setShortcutsOpen(true);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // When the project reloads (start/stop), if the open node vanished,
   // close the panel. (We now keep the panel open for any kind, not
@@ -307,6 +325,10 @@ export default function ProjectCanvas() {
           nodes={current.nodes}
           onClose={() => setTriggerOpen(false)}
         />
+      )}
+
+      {shortcutsOpen && (
+        <ShortcutsModal onClose={() => setShortcutsOpen(false)} />
       )}
     </div>
   );
