@@ -60,9 +60,11 @@ live containers — there is no "demo mode".
 | 8 | **Logs view**                 | `≡ Logs` button on canvas            | Live timeline of every lifecycle / wire / message / anomaly / attack event.   |
 | 9 | **Killer demo**               | First-time UX on `/projects`         | One-click 60-second ARP-spoof MITM scenario.                                  |
 
-See [`phases/overview.md`](./phases/overview.md)
-for the full phase plan and [`architecture.md`](./architecture.md) for
-how the pieces fit together.
+See [`M4_OVERVIEW.md`](./M4_OVERVIEW.md) for the detailed
+walk-through of every shipped phase and how the pieces fit together,
+[`architecture.md`](./architecture.md) for the system-level
+architecture, and [`RUNBOOK.md`](./RUNBOOK.md) for the on-call
+contributor runbook.
 
 ---
 
@@ -385,10 +387,12 @@ document the implication in any deployment notes.
 
 ## Contributing
 
-- Read [`architecture.md`](./architecture.md) for how the system
-  fits together.
-- Read [`phases/overview.md`](./phases/overview.md)
-  for the current build plan.
+- Read [`M4_OVERVIEW.md`](./M4_OVERVIEW.md) for a detailed
+  walk-through of every shipped phase and how the pieces fit
+  together (data model, send lifecycle, start flow, router
+  panel, wire view, attacks view, logs view, killer demo).
+- Read [`architecture.md`](./architecture.md) for the
+  system-level architecture.
 - Read [`RUNBOOK.md`](./RUNBOOK.md) for the on-call contributor
   runbook (debugging, common failures, how the orphan sweeper
   works, etc.).
