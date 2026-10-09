@@ -918,14 +918,20 @@ Per-host cards, each showing:
 - A "ping" button that runs ping from that host to any other IP
 - A "messages" link that opens the per-host message console
 
-### 11.6 Attacks view (M3 — `/projects/:id/attacks`)
+### 11.6 Attacks view (M4 phase 06 — `/projects/:id/attacks`)
 
 If an attacker is present, a tab showing:
 
-- Current attack mode and target
-- Live counter widgets (packets/sec, connections/sec, etc.) that vary by mode
-- Detection signals (e.g. "MAC for 10.30.10.1 changed 2s ago")
-- A "Stop attack" button
+- A per-attacker card with mode picker, target readout, and Start/Stop
+- Live signal timeline (new_mac, arp_rate, syn_rate, http_rate, …)
+- Per-mode teaching card (markdown, rendered inline)
+- A "Live attack timeline" across all attackers in the project
+
+The detection is server-side: `attack_detector` polls every attacker's
+`:9092/state` once per second, compares `packets_per_sec` to per-mode
+thresholds, and writes `AttackSignal` rows + broadcasts over WebSocket.
+The frontend renders the signals as a live feed; the canvas shows
+attackers in an active state with a red ring and a mode pill.
 
 ---
 
@@ -955,38 +961,30 @@ For reference, the running network is:
 
 ### 11a.1 The projects home (`/projects`)
 
-The landing page after login. A grid of project cards.
+The landing page. A grid of project cards. The first-time UX
+(phase 08) shows a 12-second toast with a **Try the killer demo**
+CTA on the empty state; the demo button (`⚡ Killer demo`) is
+also always present in the header.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│  ContainerNet                                          [New Project] [⚙]   │
+│  Projects                                              [⚡ Killer demo] [+ New project]
+│  Each project is its own network canvas.                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  My Projects                                            [All] [Running] [...]│
-│                                                                              │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐              │
 │  │ 🟢 Lab A        │  │ ⚫ Lab B        │  │ 🟡 Lab C        │              │
-│  │ mesh · 14 dev   │  │ star · 5 dev    │  │ bus · 8 dev     │              │
-│  │ 10.30.10.0/24   │  │ 192.168.1.0/24  │  │ 172.16.0.0/24   │              │
+│  │ 4 nodes · 3 wir │  │ 5 nodes · 4 wir │  │ 8 nodes · 7 wir │              │
 │  │ running         │  │ stopped         │  │ partial         │              │
-│  │ 14 up / 0 down  │  │ 0 up / 5 down   │  │ 6 up / 2 down   │              │
 │  │ 2 min ago       │  │ yesterday       │  │ 3 hours ago     │              │
-│  │ [Open] [Stop]   │  │ [Open] [Start]  │  │ [Open] [Stop]   │              │
+│  │ [Open canvas][✕]│  │ [Open canvas][✕]│  │ [Open canvas][✕]│              │
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘              │
-│                                                                              │
-│  ┌─────────────────┐                                                       │
-│  │ 📋 Lab D        │                                                       │
-│  │ (draft)         │                                                       │
-│  │ not yet started │                                                       │
-│  │ [Edit] [Start]  │                                                       │
-│  └─────────────────┘                                                       │
-│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Green dot** = running, **yellow** = partial (some containers up), **gray** = stopped, **red** = error
-- Clicking "Open" takes the user to that project's canvas
-- "New Project" goes to a blank canvas
+- Status pill colour follows the design-system contract: `running` = green, `partial` = yellow, `starting` = cyan pulse, `stopped` = grey, `error` = red, `draft` = slate
+- "Open canvas" takes the user to that project's canvas
+- "New project" opens a one-field modal (name only) and lands on the blank canvas
+- The first-time killer-demo toast only fires once per browser (see `containernet.killer_demo_toast_shown` in localStorage)
 
 ### 11a.2 The canvas (main project view — `/projects/:id/canvas`)
 
@@ -1614,26 +1612,29 @@ the demos to back them up.
 
 ---
 
-## 16. Build order (the 8-step plan)
+## 16. Build order (the 9-phase M4 plan)
 
-The system is built in 8 independent, testable steps. Each step ends
-with something the user can see, and the system keeps working at every
-step.
+The system is built in 9 independent, testable phases. Each phase
+ends with something the user can see, and the system keeps working
+at every phase. The full plan with per-phase acceptance tests lives
+in [`phases/milestone-4/`](./phases/milestone-4/overview.md).
 
-| # | Step | What it adds | Visible result |
-|---|------|--------------|----------------|
-| 1 | Router image | `containernet-router-base` + spawn function | A test script can build a 2-router, 4-host network |
-| 2 | New schema | `ProjectNode`, `ProjectInterface`, `ProjectLink` | Old projects still work, new tables are in place |
-| 3 | Generic spawn | One spawn function handles all 3 node kinds | A test script can build any topology |
-| 4 | Manual creation | CLI tool to create a project without the UI | User can build a 3-router, 10-host network via CLI |
-| 5 | Canvas editor | React Flow drag-drop, save, start | User can build a 3-router network by dragging and dropping |
-| 6 | Per-link capture | One capture container per link, wire view per link | User can see packets on any specific link |
-| 7 | Router panels | Live `ip route` / `ip neigh` widgets + anomaly detection | User can see what the router knows, in real time |
-| 8 | Attacker node | Attacker kind + 5 attack modes + detection | User can drop an attacker and watch a real MITM |
+| #  | Phase                              | What it adds                                                            | Visible result                                                                  |
+|----|------------------------------------|-------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| 01 | Data model + canvas editor         | `ProjectNode`, `ProjectInterface`, `ProjectLink`; React Flow drag-drop | User can build a 3-router network by dragging and dropping                        |
+| 02 | Router container + per-wire bridges| `containernet-router-base` + spawn function; one Linux bridge per link  | User can wire routers and see a test topology with one bridge per wire          |
+| 03 | Live router panel                  | Streaming `ip route` / `ip neigh` / interfaces; anomaly detection      | User can see what the router knows, in real time                                |
+| 04 | Wire view (per-link capture)       | NDJSON capture per link; per-link packet stream with protocol colour     | User can see packets on any specific link                                       |
+| 05 | Trigger + message console          | `+ Send` modal; per-host message log                                    | User can fire a real HTTP request across the topology                           |
+| 06 | Attacks view                       | Attacker kind + 5 attack modes + detection signals + teaching cards     | User can drop an attacker and watch a real MITM with anomaly signals             |
+| 07 | Logs view + lifecycle events       | Per-project event timeline; orphan sweeper; SSE live feed                | User can see every lifecycle, wire, message, anomaly, and attack in one place   |
+| 08 | Polish + killer demo               | Error boundary, `?` shortcuts modal, one-click ARP-spoof MITM demo      | First-time user gets a 60-second killer demo with a single click                 |
+| 09 | Docs + handoff                     | This doc + Makefile + RUNBOOK + M3 archive                              | A new contributor can clone, build, run, and complete the killer demo unassisted |
 
-The **first 3 steps** are the foundation. Steps 4-5 are the user-facing
-canvas. Steps 6-7 are the observability layer. Step 8 is the M3
-attacker functionality, made possible by the router.
+**M4 is the new build order.** M1, M2, M3 are history; their
+`phases/` folders are kept for reference. The 5 attack scenarios
+that were originally M3's scope are now M4 phase 06, built on top
+of the M4 routed topology instead of the M3 flat bridge.
 
 ---
 

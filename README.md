@@ -1,194 +1,166 @@
 # ContainerNet
 
-> **A self-service, user-configurable virtual LAN platform.**
-> Build, visualize, and simulate real Docker-based networks from your browser.
+> **A Docker-based Cisco Packet Tracer.**
+> Draw a network on a blank canvas; the system materializes it as
+> real Docker containers and bridges. Send traffic, capture packets,
+> fire attacks, watch the network react — all live, all in your
+> browser.
 
-ContainerNet turns a one-line form (`Mesh · 8 hosts · auto subnet`) into a fully
-running set of Linux containers wired together on a private bridge network.
-No code, no YAML, no `docker exec` — pick a topology, click **Start**, and
-inspect the result.
+ContainerNet is a teaching tool for networking and network security.
+The user is the engineer: there are no templates to pick from, the
+canvas always starts blank, and every node on the canvas becomes a
+real Linux container wired to the rest of the lab by real Linux
+bridges. Live packet capture, live attack scenarios, and live
+detection signals turn the canvas into a sandbox where the same
+hands-on intuition you get from a physical lab is available from a
+browser tab.
 
-Everything is real: every host is a Docker container on its own per-project
-bridge, every "communication" is an actual HTTP request that crosses the
-topology, every status LED is a live heartbeat from a running process.
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [How It Works](#how-it-works)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Project Layout](#project-layout)
-- [Configuration](#configuration)
-- [Operating the Stack](#operating-the-stack)
-- [Development](#development)
-- [Security Notes](#security-notes)
-- [Credits](#credits)
+The 5 attack modes (unknown host, duplicate IP, ARP spoof, TCP
+SYN flood, HTTP flood) ship with teaching cards, so the same
+project is also a self-paced lab for learning how those attacks
+look on the wire.
 
 ---
 
-## Features
-
-ContainerNet ships six concrete capabilities. Every one runs against live
-containers — there is no "demo mode".
-
-| # | Capability              | Where                            | What it does                                                              |
-|---|-------------------------|----------------------------------|---------------------------------------------------------------------------|
-| 1 | **Create a LAN**        | `/builder`                       | Pick topology + host count → backend generates the graph and provisions a private bridge |
-| 2 | **Visualize topology**  | `/projects/:id/topology`         | Interactive node-edge graph (React Flow) with drag-and-drop persistence    |
-| 3 | **Start / stop hosts**  | `/projects/:id/hosts`            | One button per project; per-host LEDs reflect live heartbeats              |
-| 4 | **Send a real request** | `/projects/:id/communications`   | Node-RED-style trigger panel: source, dest, protocol, payload              |
-| 5 | **Watch packets**       | same page                        | Animated edges while the request is in flight                             |
-| 6 | **Read message logs**   | `/projects/:id/messages`         | One Node-RED-style console per host with live message streams              |
-
-### Supported topologies
-
-Five shapes are available on the **LAN Builder** page:
-
-| Topology | Description                                                            |
-|----------|------------------------------------------------------------------------|
-| **Mesh** | Every node connected to every other                                    |
-| **Star** | One centre node connected to all satellites                            |
-| **Ring** | Closed loop (`host-1` → `host-2` → … → `host-1`)                       |
-| **Bus**  | Linear chain (`host-1` → `host-2` → … → `host-N`)                      |
-| **Tree** | Balanced binary tree rooted at `host-1`                                |
-
-Each shape places nodes with sensible default positions; drag them around to
-suit your taste — positions are persisted to the database.
-
-### Multi-project coexistence
-
-Every project owns its own Docker bridge (named `proj_<uuid>_lan`) so two
-projects can never see each other's traffic. Subnets are auto-assigned from
-`10.30.0.0/24` … `10.99.0.0/24` — the only field you usually need to fill in
-is the project name. Manual subnets are still supported; collisions return a
-clear `409` rather than silently overlapping.
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- **Docker Engine 24+** with the socket accessible to your user
-- **Docker Compose v2**
-- **Node.js 20+** (only for local frontend builds — the image is self-contained)
-
-### Launch
+## Quickstart
 
 ```bash
+git clone <repo> containernet
+cd containernet
 docker compose up -d --build
 ```
 
-Then open:
+Then open <http://localhost:5173>. The first run compiles the
+`host-base` image from source — give it a few minutes.
 
-| Surface      | URL                          |
-|--------------|------------------------------|
-| Web UI       | <http://localhost:5173>      |
-| REST API     | <http://localhost:8000>      |
-| Swagger docs | <http://localhost:8000/docs> |
+On the empty projects page, click **⚡ Killer demo**. The system
+creates a 4-node ARP-spoof MITM lab (router + 2 hosts + attacker)
+and auto-starts it; within ~10 seconds you land on a running
+canvas with live packet capture on the attacker's link and a
+"new MAC" anomaly firing in real time.
 
-The first build takes a few minutes (the `host-base` image is compiled from
-source). Subsequent starts take seconds.
-
-### Tear down
-
-```bash
-docker compose down        # stop everything, keep data
-docker compose down -v     # stop AND wipe the database
-```
+Press `?` on the canvas for the keyboard shortcuts.
 
 ---
 
-## How It Works
+## What's in the box
 
-A project's life cycle, end-to-end:
+ContainerNet ships 9 M4 phases. Every one runs against live
+containers — there is no "demo mode".
 
-1. **You fill the form.** Topology type, host count, project name. Subnet
-   is auto-assigned unless you toggle it off.
+| # | Capability                    | Surface                              | What you do                                                                  |
+|---|-------------------------------|--------------------------------------|------------------------------------------------------------------------------|
+| 1 | **Blank-canvas editor**       | `/projects`                          | Drop hosts, routers, switches, attackers. Drag to position. Click a wire to type IPs. |
+| 2 | **One container per node**    | Canvas header                        | Click **Start**; the system spawns one `containernet-*` container per node.   |
+| 3 | **One bridge per wire**       | Docker network list                  | Each wire is its own Linux bridge. Two projects can never see each other's traffic. |
+| 4 | **Live router panel**         | Click a router node                  | Watch routes, ARP table, and interfaces stream in over WebSocket.              |
+| 5 | **Send traffic**              | `+ Send` button on canvas            | Pick a source / dest / protocol, fire a real HTTP request across the topology. |
+| 6 | **Wire view (per-link capture)** | Click a wire                      | Live NDJSON packet stream with protocol colour-coding.                        |
+| 7 | **Attacks view**              | Click an attacker node or `/attacks` | Pick a mode (arp_spoof, tcp_flood, …), start, watch the anomaly detector fire. |
+| 8 | **Logs view**                 | `≡ Logs` button on canvas            | Live timeline of every lifecycle / wire / message / anomaly / attack event.   |
+| 9 | **Killer demo**               | First-time UX on `/projects`         | One-click 60-second ARP-spoof MITM scenario.                                  |
 
-2. **Backend persists the graph.** A `Project` row is created along with one
-   `ProjectHost` per node and one `ProjectEdge` per link. Each host's IP is
-   pre-allocated inside the project's `/24`.
-
-3. **You click Start.** The backend talks to the Docker daemon over the
-   mounted Unix socket. It creates the bridge network, spawns one
-   `containernet-host-base` container per host, attaches each to the bridge
-   with the pinned IP, and attaches it to the backend's network so it can
-   report in. Container IDs flow back into the DB.
-
-4. **Hosts heartbeat.** Every spawned host runs a Python agent that POSTs
-   `/api/hosts/{id}/heartbeat` every few seconds with its CPU, RAM, and
-   network counters. A background sweeper on the backend flips hosts to
-   `offline` after 15 s of silence.
-
-5. **You trigger a communication.** The frontend posts a real HTTP request
-   to `POST /api/projects/:id/communications`. The backend picks the source
-   container's bridge IP, sends the request through the project's network,
-   and records the latency, status, and full envelope. The frontend animates
-   the edge while the request is in flight.
-
-6. **You read messages.** Each host's agent also forwards per-host
-   messages (`POST /api/projects/:id/messages`) which the frontend renders
-   inside a Node-RED-style console window per host.
+See [`phases/milestone-4/overview.md`](./phases/milestone-4/overview.md)
+for the full phase plan and [`architecture.md`](./architecture.md) for
+how the pieces fit together.
 
 ---
 
-## Architecture
+## Screens
+
+| Projects home (empty)            | Canvas (running)                       | Wire view (live capture)             |
+|----------------------------------|----------------------------------------|--------------------------------------|
+| *(see `docs/screens/projects.png`)* | *(see `docs/screens/canvas.png`)*        | *(see `docs/screens/wire.png`)*        |
+
+Screenshots are stored in `docs/screens/`. The dark theme is the
+contract — see [`phases/milestone-4/design-system.md`](./phases/milestone-4/design-system.md).
+
+---
+
+## How it works
+
+A project's life cycle, end to end:
+
+1. **You draw a network.** Drop nodes, drag to position, click a
+   wire to type IPs and subnet masks. Five node kinds (`host`,
+   `server`, `switch`, `router`, `attacker`) and three wire states
+   (unconfigured, IP-only, fully wired).
+2. **You click Start.** The backend talks to the Docker daemon
+   over the mounted Unix socket. It creates one bridge per wire
+   (with a /29+ subnet that leaves room for a gateway), spawns
+   one container per node, attaches each container to the bridges
+   it participates in, and pins the IPs the user typed. Routers
+   are spawned with `net.ipv4.ip_forward=1`.
+3. **Containers heartbeat.** Every container runs the same
+   `host-agent` process. It exposes a small HTTP API on `:8080`
+   (host/server/attacker) or `:9090` (router), and reports
+   heartbeats, metrics, and the agent's own state back to the
+   backend over the shared `containernet_lan` network.
+4. **Anomalies + attack signals.** A background detector on the
+   backend polls every container every second, compares to
+   thresholds, and broadcasts over WebSocket. The frontend shows
+   them as red rings on the canvas and as a feed in the Attacks
+   view.
+5. **You read the logs.** The Logs view is an SSE / WebSocket
+   timeline of every event in the project — lifecycle, bridges,
+   node spawns, messages, anomalies, attack signals, errors. Use
+   it as the single pane of glass when something goes wrong.
 
 ```
 User (browser)
-    │ HTTP / WebSocket
+    │  HTTP / WebSocket / SSE
     ▼
 React dashboard (Vite + TypeScript + React Flow + Zustand)
-    │ REST + WS (per-project subscribe envelope)
+    │  REST + WS (per-project subscribe envelope)
     ▼
 FastAPI backend (Python + SQLAlchemy + asyncpg)
-    ├── Project / ProjectHost / ProjectEdge models
-    ├── Topology generator (mesh / star / ring / bus / tree)
-    ├── Container service (Docker SDK)
-    ├── Network service (per-project bridge)
-    ├── Communication orchestrator (HTTP via project bridge)
-    ├── WebSocket broadcaster (per-project subscriptions)
-    └── Host-agent runtime (spawned inside each container)
+    ├── 5-primitive model: Project, ProjectNode, ProjectInterface, ProjectLink, ProjectEvent
+    ├── Lifecycle service (start / stop / restart)
+    ├── Per-link bridge + per-link packet capture
+    ├── Host agent runtime (spawned inside every container)
+    ├── Anomaly detector (polls routers every 1s)
+    ├── Attack detector (polls attacker :9092 every 1s)
+    ├── Orphan sweeper (every 60s, cleans up half-started projects)
+    └── Realtime broadcaster (WebSocket + SSE subscribers)
             │
-            ├──► PostgreSQL (projects, hosts, edges, comms, messages)
+            ├──► PostgreSQL (projects, nodes, interfaces, links, events)
             └──► Docker daemon (/var/run/docker.sock)
                        │
                        ▼
-                One bridge per project:
-                  proj_<uuid>_lan   ── isolated /24, only this project's hosts
-                  containernet_lan  ── shared with the backend (heartbeats)
+                One bridge per wire:
+                  cn<short-pid>ppl<short-lid>   ── isolated /29+, only the two endpoints
+                  containernet_lan             ── shared with the backend (heartbeats)
 ```
 
-### Data model
+### The 5 rules
 
-| Table            | Rows                    | Notes                                                              |
-|------------------|-------------------------|--------------------------------------------------------------------|
-| `projects`       | One per project         | Status: `draft`, `running`, `partial`, `stopped`                   |
-| `project_hosts` | One per host           | Position, IP, container_id, last heartbeat                          |
-| `project_edges` | One per topology link  | Undirected (canonical ordering)                                     |
-| `communications`| One per triggered send | Source/dest host IDs, latency, status                               |
-| `messages`      | One per host-agent msg | Used by per-host message consoles                                   |
-
----
-
-## Tech Stack
-
-| Layer        | Tools                                                                            |
-|--------------|----------------------------------------------------------------------------------|
-| Frontend     | React 18, TypeScript, Vite, Tailwind, Zustand, React Flow, Axios. Static bundle served by Nginx. |
-| Backend      | FastAPI, SQLAlchemy 2.0 (async), asyncpg, httpx, Docker SDK for Python, WebSockets. Lifespan hook handles graceful shutdown of spawned containers. |
-| Database     | PostgreSQL 15.                                                                    |
-| Hosts        | Python 3.11 (aiohttp, psutil, prometheus-client) running inside Alpine containers built from `infra/hosts/host-base.Dockerfile`. |
-| Orchestration| Docker Compose v2.                                                                |
+1. **No templates.** The canvas is always blank. The one-click
+   "Killer demo" is a single-endpoint exception, not a template
+   picker.
+2. **Design system is a contract.** Every screen uses the tokens
+   in `phases/milestone-4/design-system.md`. If a token doesn't
+   exist, add it to the spec first.
+3. **One container per node, one bridge per wire.** Always.
+4. **User is the engineer.** Subnet math, MAC addresses, attack
+   parameters — all the user.
+5. **Acceptance test passes before phase is done.** Each phase
+   file has its own `PHASE_xx_ACCEPTANCE.md` checklist.
 
 ---
 
-## Project Layout
+## Tech stack
+
+| Layer         | Tools                                                                            |
+|---------------|----------------------------------------------------------------------------------|
+| Frontend      | React 18, TypeScript, Vite, Tailwind, Zustand, React Flow, Axios. Static bundle served by Nginx. |
+| Backend       | FastAPI, SQLAlchemy 2.0 (async), asyncpg, httpx, Docker SDK, aiohttp. Lifespan hook handles graceful shutdown of spawned containers. |
+| Database      | PostgreSQL 15.                                                                    |
+| Containers    | Python 3.11 (aiohttp, psutil, scapy) on Alpine. The `host-base` image is shared by host / server / attacker; router-agent has its own image. |
+| Orchestration | Docker Compose v2.                                                                |
+
+---
+
+## Project layout
 
 ```
 ContainerNet/
@@ -197,42 +169,53 @@ ContainerNet/
 │   │   ├── main.py                # FastAPI app + lifecycle hooks
 │   │   ├── core/                  # docker_client, db session, settings
 │   │   ├── api/                   # HTTP route modules (one per resource)
-│   │   ├── ws/                    # WebSocket connection manager + envelopes
-│   │   ├── schemas/               # Pydantic request/response models
 │   │   ├── models/                # SQLAlchemy ORM models
-│   │   └── services/              # Domain logic (projects, containers, networks, …)
+│   │   ├── schemas/               # Pydantic request/response models
+│   │   └── services/              # Domain logic (projects, containers, links, …)
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── wait-for-db.sh
 ├── frontend/                      # React + Vite dashboard
 │   ├── src/
 │   │   ├── api/                   # Typed REST client
-│   │   ├── store/                 # Zustand stores (per resource)
-│   │   ├── hooks/                 # useWebSocket + cross-cutting hooks
+│   │   ├── store/                 # Zustand stores
+│   │   ├── canvas/                # React Flow surface + custom node types
 │   │   ├── pages/                 # Top-level routed views
-│   │   ├── components/            # Reusable UI (topology, hosts, trigger, …)
-│   │   ├── utils/                 # Topology icons + descriptions
+│   │   ├── panels/                # Side panels (host, router)
+│   │   ├── attacks/               # Attacker panel + Attacks view + lessons
+│   │   ├── logs/                  # Logs view + event row + filter
+│   │   ├── trigger/               # "+ Send" modal
+│   │   ├── components/            # Reusable UI (ErrorBoundary, ShortcutsModal, …)
 │   │   └── types/                 # Shared TS interfaces
 │   ├── Dockerfile                 # Multi-stage build → Nginx static bundle
 │   ├── nginx.conf                 # /api and /ws proxy to backend
 │   ├── tailwind.config.js
-│   ├── vite.config.ts
-│   └── package.json
+│   └── vite.config.ts
 ├── host-agent/                    # Python agent running inside every spawned host
-│   ├── agent.py                   # Entrypoint: starts metrics + message + heartbeat
-│   ├── config.py                  # Reads HOST_ID / HOST_IP / PROJECT_ID env
-│   ├── metrics_exporter.py        # /healthz + Prometheus /metrics on :9100
-│   ├── message_service.py         # /send + /receive on :8080 (HTTP-based "ping")
-│   ├── message_reporter.py        # Fire-and-forget reporter to backend
-│   ├── health_monitor.py          # Periodic /api/health POSTs
-│   └── requirements.txt
+│   ├── agent.py                   # Entrypoint: starts metrics, messages, attack control
+│   ├── attack_engine.py           # 5 attack modes (scapy + aiohttp)
+│   ├── attack_control.py          # :9092 control HTTP API
+│   ├── config.py                  # Reads AGENT_ROLE, ATTACK_MODE, etc.
+│   └── …
+├── router-agent/                  # Same agent shape, but for routers
+│   └── …
 ├── infra/
 │   └── hosts/
-│       └── host-base.Dockerfile   # Alpine + Python base used for every spawned host
-├── scripts/
-│   └── smoke_test.sh              # End-to-end curl-based smoke test (Phases 0 → 9)
-├── docker-compose.yml             # db + backend + host-base + frontend
-├── .env.example                   # Sample environment variables
+│       ├── host-base.Dockerfile
+│       └── router-base.Dockerfile
+├── phases/                        # Build plan
+│   ├── milestone-1/               # Archived
+│   ├── milestone-2/               # Archived
+│   ├── milestone-4/               # Current (9 phases)
+│   └── archive/                   # Things we tried and superseded
+├── docs/
+│   └── screens/                   # README screenshots
+├── tests/
+│   └── manual/                    # End-to-end tests
+├── docker-compose.yml             # db + backend + frontend
+├── Makefile                       # up / down / clean / logs / test
+├── RUNBOOK.md                     # On-call contributor runbook
+├── architecture.md                # Canonical architecture doc
 └── README.md                      # You are here
 ```
 
@@ -240,9 +223,9 @@ ContainerNet/
 
 ## Configuration
 
-All configuration is via environment variables on the `backend` service (defined
-in `docker-compose.yml`). For local overrides, copy `.env.example` to `.env` and
-edit.
+All configuration is via environment variables on the `backend`
+service (defined in `docker-compose.yml`). For local overrides,
+copy `.env.example` to `.env` and edit.
 
 | Variable        | Default                                                       | Purpose                                                                   |
 |-----------------|---------------------------------------------------------------|---------------------------------------------------------------------------|
@@ -250,14 +233,24 @@ edit.
 | `DOCKER_HOST`   | `unix:///var/run/docker.sock`                                 | Where the backend reaches the Docker daemon                               |
 | `ADMIN_TOKEN`   | *(unset)*                                                     | Token required for `/api/admin/*`. **Leave unset in production** to disable those endpoints entirely (each request returns 403). |
 
-The frontend picks up only its API base URL via the Nginx config; it defaults
-to `http://localhost:8000`.
+The frontend picks up only its API base URL via the Nginx config;
+it defaults to `http://localhost:8000`.
 
 ---
 
-## Operating the Stack
+## Operating the stack
 
-### Common commands
+Use the Makefile:
+
+```bash
+make up        # docker compose up -d --build
+make down      # docker compose down
+make logs      # docker compose logs -f --tail=100
+make test      # backend + frontend tests
+make clean     # wipe containers + networks; start fresh
+```
+
+Common manual commands:
 
 ```bash
 # Tail backend logs
@@ -283,19 +276,9 @@ docker exec containernet_db pg_dump -U postgres containernet > backup.sql
 docker exec -i containernet_db psql -U postgres containernet < backup.sql
 ```
 
-> The running Docker containers and bridges are **not** included in the dump —
-> those are recoverable by re-creating the projects through the UI.
-
-### Smoke test
-
-With the stack up, run the end-to-end smoke test:
-
-```bash
-chmod +x scripts/smoke_test.sh
-./scripts/smoke_test.sh
-```
-
-It exercises the public REST surface and exits non-zero on the first failure.
+The running Docker containers and bridges are **not** included in
+the dump — those are recoverable by re-creating the projects
+through the UI.
 
 ---
 
@@ -303,15 +286,16 @@ It exercises the public REST surface and exits non-zero on the first failure.
 
 ### Local frontend iteration
 
-The frontend is built once and served as static files through Nginx, so local
-changes need a rebuild:
+The frontend is built once and served as static files through
+Nginx, so local changes need a rebuild:
 
 ```bash
 docker compose build frontend && docker compose up -d frontend
 ```
 
-There's no hot-reload container by default. For tight iteration loops, mount
-the source and run `npm run dev` against a local Node install:
+There's no hot-reload container by default. For tight iteration
+loops, mount the source and run `npm run dev` against a local
+Node install:
 
 ```bash
 cd frontend
@@ -321,63 +305,112 @@ npm run dev          # serves on http://localhost:5173 with /api proxied
 
 ### Local backend iteration
 
-`./backend/app` is bind-mounted read-only into the running container, so edits
-to Python files take effect after:
+`./backend/app` is bind-mounted into the running container, so
+edits to Python files take effect after:
 
 ```bash
 docker compose restart backend
 ```
 
-`./host-agent` is similarly bind-mounted into the `host-base` image and into
-spawned host containers.
+`./host-agent` and `./router-agent` are similarly bind-mounted
+into the spawned containers — agent changes need a new container
+spawn (i.e. restart the project), not a backend restart.
 
-### Adding a topology template
+### End-to-end tests
 
-1. Add a generator function in `backend/app/services/topology_generator.py`
-2. Register it in the `layout_fns` / `edge_fns` maps
-3. Add the type literal in `backend/app/schemas/project.py`
-4. Add an icon + label in `frontend/src/utils/topologyIcons.tsx`
+The `tests/manual/` folder has standalone Python scripts that
+exercise the full stack over HTTP. With the stack up:
 
-### Adding a new resource
-
-1. Pydantic schemas in `backend/app/schemas/`
-2. ORM model in `backend/app/models/`
-3. Service module in `backend/app/services/`
-4. Router in `backend/app/api/` + `include_router` in `backend/app/api/__init__.py`
-5. Typed client in `frontend/src/api/client.ts`
-6. Zustand store in `frontend/src/store/`
-7. Page component in `frontend/src/pages/`
+```bash
+python3 tests/manual/test_killer_demo.py
+python3 tests/manual/test_logs.py
+```
 
 ---
 
-## Security Notes
+## Adding features
 
-The `backend` container is privileged against `/var/run/docker.sock` — this is
-**root-equivalent** for the Docker daemon. For a production deployment:
+A few common patterns:
+
+### Add a new attack mode
+
+1. Add the mode string to `ATTACK_MODES` in
+   `backend/app/models/project_node.py`.
+2. Add the engine loop to
+   `host-agent/attack_engine.py`.
+3. Add the detector signal to
+   `backend/app/services/attack_detector.py` (one new
+   threshold + one check in `_poll_once`).
+4. Add a teaching card in
+   `frontend/src/attacks/lessons/<mode>.md`.
+5. Add a button in
+   `frontend/src/attacks/AttackerPanel.tsx`.
+
+### Add a new node kind
+
+The kinds are an enum (`backend/app/models/project_node.py`).
+The corresponding logic lives in:
+- `node_service.spawn_node` (container image + env vars + ports)
+- `host-agent/agent.py` or `router-agent/agent.py` (role-specific
+  HTTP API)
+- `frontend/src/components/icons/NodeIcon.tsx` (visual)
+
+### Extend the design system
+
+Add the token to `phases/milestone-4/design-system.md` first,
+then to `frontend/tailwind.config.js`, then use it. **Never the
+other way around.**
+
+---
+
+## Security notes
+
+The `backend` container is privileged against
+`/var/run/docker.sock` — this is **root-equivalent** for the
+Docker daemon. For a production deployment:
 
 - Swap the bind mount for a TCP socket proxy (e.g.
   [Tecnativa docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy))
   and expose only the operations you need
-- Set `ADMIN_TOKEN` (or leave it **unset** to disable `/api/admin/*` entirely)
-- Place the stack behind a TLS-terminating reverse proxy (Caddy, Traefik, Nginx)
+- Set `ADMIN_TOKEN` (or leave it **unset** to disable
+  `/api/admin/*` entirely)
+- Place the stack behind a TLS-terminating reverse proxy
+  (Caddy, Traefik, Nginx)
 - Run the database on a separate host with a strong password
 
-For an academic project on a single VM the defaults are fine; document the
-implication in any deployment notes.
+For an academic project on a single VM the defaults are fine;
+document the implication in any deployment notes.
+
+---
+
+## Contributing
+
+- Read [`architecture.md`](./architecture.md) for how the system
+  fits together.
+- Read [`phases/milestone-4/overview.md`](./phases/milestone-4/overview.md)
+  for the current build plan.
+- Read [`RUNBOOK.md`](./RUNBOOK.md) for the on-call contributor
+  runbook (debugging, common failures, how the orphan sweeper
+  works, etc.).
+- The design system contract is
+  [`phases/milestone-4/design-system.md`](./phases/milestone-4/design-system.md).
+  Every UI change must respect it.
 
 ---
 
 ## Credits
 
-ContainerNet is built as a foundation for a future Virtual Cyber Range. It was
-inspired by:
+ContainerNet is built as a foundation for a future Virtual Cyber
+Range. It was inspired by:
 
+- [Cisco Packet Tracer](https://www.netacad.com/courses/packet-tracer) —
+  the original blank-canvas network simulator
 - [Kathara Framework](https://github.com/KatharaFramework/Kathara) —
   container-per-host network emulation
 - [Containerlab](https://github.com/srl-labs/containerlab) —
   declarative topology descriptions
-- [Node-RED](https://nodered.org/) — trigger/output console paradigm
-- [OpenCyberRange](https://opencyberrange.com/) — cyber-range orchestration ideas
+- [Wireshark](https://www.wireshark.org/) — the protocol colour
+  discipline that drives our design system
 
 Built with:
 [FastAPI](https://fastapi.tiangolo.com/) ·
