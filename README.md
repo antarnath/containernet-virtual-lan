@@ -1,6 +1,6 @@
 # ContainerNet
 
-> **A Docker-based Cisco Packet Tracer.**
+> **A blank-canvas network lab in your browser.**
 > Draw a network on a blank canvas; the system materializes it as
 > real Docker containers and bridges. Send traffic, capture packets,
 > fire attacks, watch the network react — all live, all in your
@@ -45,8 +45,8 @@ Press `?` on the canvas for the keyboard shortcuts.
 
 ## What's in the box
 
-ContainerNet ships 9 M4 phases. Every one runs against live
-containers — there is no "demo mode".
+ContainerNet ships 9 phases of capability. Every one runs against
+live containers — there is no "demo mode".
 
 | # | Capability                    | Surface                              | What you do                                                                  |
 |---|-------------------------------|--------------------------------------|------------------------------------------------------------------------------|
@@ -60,7 +60,7 @@ containers — there is no "demo mode".
 | 8 | **Logs view**                 | `≡ Logs` button on canvas            | Live timeline of every lifecycle / wire / message / anomaly / attack event.   |
 | 9 | **Killer demo**               | First-time UX on `/projects`         | One-click 60-second ARP-spoof MITM scenario.                                  |
 
-See [`phases/milestone-4/overview.md`](./phases/milestone-4/overview.md)
+See [`phases/overview.md`](./phases/overview.md)
 for the full phase plan and [`architecture.md`](./architecture.md) for
 how the pieces fit together.
 
@@ -73,7 +73,7 @@ how the pieces fit together.
 | *(see `docs/screens/projects.png`)* | *(see `docs/screens/canvas.png`)*        | *(see `docs/screens/wire.png`)*        |
 
 Screenshots are stored in `docs/screens/`. The dark theme is the
-contract — see [`phases/milestone-4/design-system.md`](./phases/milestone-4/design-system.md).
+contract — see [`phases/design-system.md`](./phases/design-system.md).
 
 ---
 
@@ -138,7 +138,7 @@ FastAPI backend (Python + SQLAlchemy + asyncpg)
    "Killer demo" is a single-endpoint exception, not a template
    picker.
 2. **Design system is a contract.** Every screen uses the tokens
-   in `phases/milestone-4/design-system.md`. If a token doesn't
+   in `phases/design-system.md`. If a token doesn't
    exist, add it to the spec first.
 3. **One container per node, one bridge per wire.** Always.
 4. **User is the engineer.** Subnet math, MAC addresses, attack
@@ -203,10 +203,10 @@ ContainerNet/
 │   └── hosts/
 │       ├── host-base.Dockerfile
 │       └── router-base.Dockerfile
-├── phases/                        # Build plan
-│   ├── milestone-1/               # Archived
-│   ├── milestone-2/               # Archived
-│   ├── milestone-4/               # Current (9 phases)
+├── phases/                        # Build plan (kept locally, not pushed)
+│   ├── phase-1/                   # Archived
+│   ├── phase-2/                   # Archived
+│   ├── phase-4/                   # Current (9 phases)
 │   └── archive/                   # Things we tried and superseded
 ├── docs/
 │   └── screens/                   # README screenshots
@@ -357,7 +357,7 @@ The corresponding logic lives in:
 
 ### Extend the design system
 
-Add the token to `phases/milestone-4/design-system.md` first,
+Add the token to `phases/design-system.md` first,
 then to `frontend/tailwind.config.js`, then use it. **Never the
 other way around.**
 
@@ -387,13 +387,13 @@ document the implication in any deployment notes.
 
 - Read [`architecture.md`](./architecture.md) for how the system
   fits together.
-- Read [`phases/milestone-4/overview.md`](./phases/milestone-4/overview.md)
+- Read [`phases/overview.md`](./phases/overview.md)
   for the current build plan.
 - Read [`RUNBOOK.md`](./RUNBOOK.md) for the on-call contributor
   runbook (debugging, common failures, how the orphan sweeper
   works, etc.).
 - The design system contract is
-  [`phases/milestone-4/design-system.md`](./phases/milestone-4/design-system.md).
+  [`phases/design-system.md`](./phases/design-system.md).
   Every UI change must respect it.
 
 ---
@@ -403,8 +403,6 @@ document the implication in any deployment notes.
 ContainerNet is built as a foundation for a future Virtual Cyber
 Range. It was inspired by:
 
-- [Cisco Packet Tracer](https://www.netacad.com/courses/packet-tracer) —
-  the original blank-canvas network simulator
 - [Kathara Framework](https://github.com/KatharaFramework/Kathara) —
   container-per-host network emulation
 - [Containerlab](https://github.com/srl-labs/containerlab) —
