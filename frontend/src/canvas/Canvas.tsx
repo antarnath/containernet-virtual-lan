@@ -292,15 +292,16 @@ function CanvasInner({
     [addLink, projectId],
   );
 
-  // ─── click to open a node's panel (phase 03: routers only) ────
+  // ─── click to open a node's panel (phase 03: routers; phase 05:
+  //     host/server/attacker). Switches still no-op — they're
+  //     transparent L2 devices with no agent. ───────────────────
   const onNodeClick: NodeMouseHandler = useCallback(
     (_e, node) => {
       if (!onOpenNode) return;
       const data = node.data as CanvasNodeData | undefined;
       if (!data) return;
-      // Phase 03 only mounts the RouterPanel. Other node kinds get
-      // a one-row panel later (phases 05/06) so we no-op for them.
-      if (data.kind !== 'router') return;
+      // Switches have no agent, so the panel would be empty.
+      if (data.kind === 'switch') return;
       onOpenNode({
         nodeId: node.id,
         nodeName: data.name,

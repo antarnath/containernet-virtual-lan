@@ -8,9 +8,13 @@
 #
 # M4 phase 04: packet_service (per-link packet classification + SSE
 # stream tail) is exported so the API can serve the wire view.
+#
+# M4 phase 05: communication_service (POST to host agent's /send) +
+# route_resolver (topology walk for the route preview).
 
 from . import (
     anomaly_detector,
+    communication_service,
     container_service,
     link_service,
     node_service,
@@ -18,11 +22,13 @@ from . import (
     project_lifecycle,
     project_service,
     realtime,
+    route_resolver,
     router_proxy,
 )
 
 __all__ = [
     "anomaly_detector",
+    "communication_service",
     "container_service",
     "link_service",
     "node_service",
@@ -30,5 +36,6 @@ __all__ = [
     "project_lifecycle",
     "project_service",
     "realtime",
+    "route_resolver",
     "router_proxy",
 ]

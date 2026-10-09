@@ -92,6 +92,61 @@ def _link_capture_path(project_id: str, link_id: str) -> str:
     return f"{CAPTURE_DIR_HOST}/{_link_capture_filename(project_id, link_id)}.ndjson"
 
 
+def _default_gateway_for(
+    node: ProjectNode,
+    project: Project,
+    iface_by_id: dict,
+) -> tuple[str | None, str | None]:
+    """Find the first router neighbor's IP for ``node`` and
+    return ``(gw_ip, gw_iface_name)`` where ``gw_iface_name`` is
+    this node's interface name (e.g. ``eth1``) on the link to that
+    router.
+
+    Used so the host's default route points to a real router in
+    the topology, not the docker default bridge (which has no
+    route to 10.0.x subnets). The entrypoint uses this to
+    `ip route add default via <gw_ip> dev <gw_iface>`.
+    """
+    # Index of link_id -> the "other side" iface when one end is
+    # ours. Built from the project's links.
+    for link in project.links:
+        if link.iface_a_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_a_id]
+            peer_iface_id = link.iface_b_id
+        elif link.iface_b_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_b_id]
+            peer_iface_id = link.iface_a_id
+        else:
+            continue
+        # Find the peer node.
+        peer_node = None
+        peer_iface = None
+        for n in project.nodes:
+            for i in n.interfaces:
+                if i.id == peer_iface_id:
+                    peer_node = n
+                    peer_iface = i
+                    break
+            if peer_node is not None:
+                break
+        if peer_node is None or peer_iface is None:
+            continue
+        # Is the peer a router?
+        kind = peer_node.kind.value if hasattr(peer_node.kind, "value") else peer_node.kind
+        if kind != "router":
+            continue
+        if not peer_iface.ip_address:
+            continue
+        # We need to tell the entrypoint the *local* iface name
+        # (eth1, eth2, …). We don't know the exact assignment
+        # without re-running the attach loop, but we can return a
+        # *stable hint*: for hosts with one link, this is eth1.
+        # The entrypoint falls back to scanning its own interfaces
+        # for the one that has the gateway IP in its subnet.
+        return peer_iface.ip_address, None
+    return None, None
+
+
 # Command per kind. M4 phase 04 wraps every kind's command with the
 # per-link capture wrapper (infra/hosts/node_entrypoint.sh) which
 # starts a tcpdump per iface before execing the agent. Switches have
@@ -293,6 +348,20 @@ def spawn_node(
         )
         eth_idx += 1
     env["NODE_CAPTURE_LINKS"] = "\n".join(capture_lines_pre)
+
+    # M4 phase 05 — pick a default gateway for the node. The first
+    # link this node participates in whose OTHER endpoint is a
+    # router becomes the gateway link; the router's interface IP on
+    # that link is the gateway. The host's default docker route
+    # (via the default bridge) is the wrong path for user-drawn
+    # traffic — it has no route to 10.0.x. The entrypoint script
+    # uses this env var to install `ip route add default via …`.
+    if kind in (NodeKind.HOST, NodeKind.SERVER, NodeKind.ATTACKER):
+        gw_ip, gw_iface = _default_gateway_for(node, project, iface_by_id_pre)
+        if gw_ip:
+            env["DEFAULT_GATEWAY_IP"] = gw_ip
+        if gw_iface:
+            env["DEFAULT_GATEWAY_IFACE"] = gw_iface
 
     labels = {
         LABEL_HOST.split("=")[0]: "true",

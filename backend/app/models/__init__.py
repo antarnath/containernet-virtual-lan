@@ -30,6 +30,8 @@ from app.models.anomaly_event import (
     AnomalyKind,
     AnomalySeverity,
 )
+# M4 phase 05 — communication / message log
+from app.models.communication import Communication
 
 __all__ = [
     "Base",
@@ -42,4 +44,6 @@ __all__ = [
     "ProjectCapture",
     # M4 phase 03
     "AnomalyEvent", "AnomalyKind", "AnomalySeverity",
+    # M4 phase 05
+    "Communication",
 ]

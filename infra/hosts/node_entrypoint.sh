@@ -62,6 +62,67 @@ ORIG_ARGC=$#
 # inherits an empty stdin (→ "EOF before pcap header").
 sleep 2
 
+# Wait for ALL non-loopback ifaces to have an IPv4 address. Without
+# this, the gateway discovery below may run while eth1 is still
+# coming up. We retry the addr count up to 10 times (1s apart).
+WAIT_IFACES=0
+while [ "$WAIT_IFACES" -lt 10 ]; do
+  N=$(ip -4 -o addr show 2>/dev/null | grep -v " lo " | grep -c "inet " || true)
+  if [ "$N" -ge 2 ]; then
+    break
+  fi
+  sleep 1
+  WAIT_IFACES=$((WAIT_IFACES + 1))
+done
+
+# M4 phase 05 — install the default route via the user-drawn
+# gateway, if the backend told us about one. The default docker
+# route (via 172.17.0.1, the default bridge) has no path to
+# 10.0.x subnets; we have to point the default route at a real
+# router in the topology for cross-subnet traffic to work.
+#
+# We auto-discover the right local interface by walking `ip -4
+# -o addr` and finding the iface whose subnet contains the
+# gateway IP. This works regardless of attach order because the
+# subnet is a property of the bridge, not of the order we joined.
+if [ -n "$DEFAULT_GATEWAY_IP" ]; then
+  # Use a newline-iterating loop with `while read` so we don't lose
+  # fields on whitespace. `-o` makes `ip` one-line per address.
+  # `ip -4 -o addr` line format: "idx: IFACE IFAMILY CIDR ...".
+  # With IFS=' ' POSIX read splits into 4 fields because the
+  # run of spaces between IFACE and IFAMILY collapses; the CIDR
+  # therefore ends up in the 4th field, not the 3rd. We grab it
+  # explicitly.
+  GW_IFACE=$(ip -4 -o addr show 2>/dev/null \
+    | while IFS=' ' read -r _IDX IFACE _FAMILY CIDR _REST; do
+        [ "$IFACE" = "lo" ] && continue
+        [ -z "$CIDR" ] && continue
+        # CIDR is "10.0.0.2/24" — use python for the CIDR test
+        # because busybox awk can't do IP math.
+        if python3 -c "
+import ipaddress, sys
+try:
+    if ipaddress.ip_address('$DEFAULT_GATEWAY_IP') in ipaddress.ip_network('$CIDR', strict=False):
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+" 2>/dev/null; then
+          echo "$IFACE"
+          break
+        fi
+      done | head -1)
+  if [ -n "$GW_IFACE" ]; then
+    if ip route replace default via "$DEFAULT_GATEWAY_IP" dev "$GW_IFACE" 2>/dev/null; then
+      echo "node_entrypoint: default route via $DEFAULT_GATEWAY_IP dev $GW_IFACE" >&2
+    else
+      echo "node_entrypoint: could not set default route via $DEFAULT_GATEWAY_IP" >&2
+    fi
+  else
+    echo "node_entrypoint: no iface found for gateway $DEFAULT_GATEWAY_IP" >&2
+  fi
+fi
+
 if [ -n "$NODE_CAPTURE_LINKS" ]; then
   NCL_LINES=$(echo "$NODE_CAPTURE_LINKS" | wc -l)
   NCL_IDX=0

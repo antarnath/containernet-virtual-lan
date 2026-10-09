@@ -36,7 +36,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import get_session
 from app.models import AnomalyEvent, NodeKind
-from app.services import anomaly_detector, packet_service, project_lifecycle, project_service, realtime, router_proxy
+from app.services import (
+    anomaly_detector,
+    communication_service,
+    packet_service,
+    project_lifecycle,
+    project_service,
+    realtime,
+    route_resolver,
+    router_proxy,
+)
 
 log = logging.getLogger(__name__)
 from app.schemas.project import (
@@ -769,6 +778,104 @@ async def dismiss_anomaly(
         ev.resolved_at = datetime.now(timezone.utc)
         await session.commit()
     return {"id": ev.id, "resolved_at": ev.resolved_at.isoformat()}
+
+
+# ─── Phase 05 — Trigger & message console ───────────────────────────
+
+@router.get("/{project_id}/route")
+async def resolve_route(
+    project_id: str,
+    src: str,
+    dst: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Resolve the route from ``src`` (node id) to ``dst`` (IP).
+
+    Returns ``{"hops": [Hop, ...]}`` on success. Returns 422
+    with ``{"detail": {"error": "..."}}`` if the destination is
+    unreachable, or 200 with ``{"error": "routing_loop",
+    "visited": [...]}`` if a loop is detected.
+    """
+    try:
+        hops = await route_resolver.resolve_route(
+            session, project_id, src, dst
+        )
+    except route_resolver.RouteLoop as exc:
+        return {
+            "project_id": project_id,
+            "src_node_id": src,
+            "dst_ip": dst,
+            "hops": [],
+            "error": "routing_loop",
+            "visited": exc.visited,
+        }
+    except route_resolver.RouteError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": str(exc.message), "src": src, "dst": dst},
+        )
+    return {
+        "project_id": project_id,
+        "src_node_id": src,
+        "dst_ip": dst,
+        "hops": [h.to_dict() for h in hops],
+    }
+
+
+@router.post("/{project_id}/communications")
+async def send_communication(
+    project_id: str,
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """Send a message from one host to a destination IP.
+
+    Body: ``{"src_node_id", "dst_ip", "protocol", "payload",
+    "dst_node_id"?}``. Response: ``SendResult`` with
+    ``comm_id, status, hops_crossed, delivered_at, error?``.
+    """
+    src_node_id = body.get("src_node_id")
+    dst_ip = body.get("dst_ip")
+    protocol = body.get("protocol", "HTTP")
+    payload = body.get("payload", "")
+    dst_node_id = body.get("dst_node_id")
+    if not src_node_id or not dst_ip:
+        raise HTTPException(
+            status_code=400,
+            detail="src_node_id and dst_ip are required",
+        )
+    try:
+        result = await communication_service.send_message(
+            session=session,
+            project_id=project_id,
+            src_node_id=src_node_id,
+            dst_ip=dst_ip,
+            protocol=protocol,
+            payload=payload,
+            dst_node_id=dst_node_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result.to_dict()
+
+
+@router.get("/{project_id}/messages")
+async def list_messages(
+    project_id: str,
+    node_id: str | None = None,
+    limit: int = 100,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the message history for a project (optionally
+    filtered to a single node). Newest first."""
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    limit = max(1, min(limit, 500))
+    rows = await communication_service.list_messages(
+        session, project_id, node_id=node_id, limit=limit
+    )
+    return {"project_id": project_id, "node_id": node_id, "messages": rows}
 
 
 # ─── helpers ──────────────────────────────────────────────────────────

@@ -19,6 +19,8 @@ import { Button, Card, LoadingSkeleton, StatusPill, toast } from '../components/
 import { Canvas, type OpenNodePayload } from '../canvas';
 import { ProjectsAPI } from '../api/client';
 import { RouterPanel } from '../panels/RouterPanel';
+import { HostPanel } from '../panels/HostPanel';
+import { TriggerPanel } from '../trigger/TriggerPanel';
 import type { ProjectDetail, ProjectStatus } from '../types';
 
 const STATUS_TONE: Record<ProjectStatus, 'idle' | 'draft' | 'starting' | 'running' | 'partial' | 'stopped' | 'error'> = {
@@ -73,12 +75,16 @@ export default function ProjectCanvas() {
   // Which node (if any) is open in the right-hand panel.
   const [openNode, setOpenNode] = useState<OpenNodePayload | null>(null);
 
-  // When the project reloads (start/stop), if the open node vanished
-  // or its kind changed, close the panel.
+  // Whether the trigger modal is open (header "+ Send" button).
+  const [triggerOpen, setTriggerOpen] = useState(false);
+
+  // When the project reloads (start/stop), if the open node vanished,
+  // close the panel. (We now keep the panel open for any kind, not
+  // just routers — phase 05 added HostPanel.)
   useEffect(() => {
     if (!openNode || !current) return;
     const stillExists = current.nodes.find((n) => n.id === openNode.nodeId);
-    if (!stillExists || stillExists.kind !== 'router') {
+    if (!stillExists) {
       setOpenNode(null);
     }
   }, [openNode, current]);
@@ -192,6 +198,14 @@ export default function ProjectCanvas() {
             {current.node_count} node{current.node_count === 1 ? '' : 's'} ·{' '}
             {current.link_count} wire{current.link_count === 1 ? '' : 's'}
           </div>
+          <Button
+            variant="accent"
+            size="sm"
+            onClick={() => setTriggerOpen(true)}
+            disabled={current.status === 'stopped' || current.status === 'draft'}
+          >
+            + Send
+          </Button>
           <StatusPill tone={STATUS_TONE[current.status]} pulse={STATUS_PULSE[current.status]}>
             {current.status}
           </StatusPill>
@@ -229,7 +243,7 @@ export default function ProjectCanvas() {
         </div>
       </div>
 
-      {/* Canvas surface + optional router panel */}
+      {/* Canvas surface + optional node panel */}
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0">
           <Canvas
@@ -238,7 +252,7 @@ export default function ProjectCanvas() {
             onOpenLink={handleOpenLink}
           />
         </div>
-        {openNode && (
+        {openNode && openNode.nodeKind === 'router' && (
           <RouterPanel
             projectId={current.id}
             nodeId={openNode.nodeId}
@@ -247,7 +261,26 @@ export default function ProjectCanvas() {
             onClose={handleClosePanel}
           />
         )}
+        {openNode && openNode.nodeKind !== 'router' && openNode.nodeKind !== 'switch' && (
+          <HostPanel
+            projectId={current.id}
+            nodeId={openNode.nodeId}
+            nodeName={openNode.nodeName}
+            nodeKind={openNode.nodeKind}
+            containerStatus={openNode.containerStatus}
+            nodes={current.nodes}
+            onClose={handleClosePanel}
+          />
+        )}
       </div>
+
+      {triggerOpen && (
+        <TriggerPanel
+          projectId={current.id}
+          nodes={current.nodes}
+          onClose={() => setTriggerOpen(false)}
+        />
+      )}
     </div>
   );
 }
