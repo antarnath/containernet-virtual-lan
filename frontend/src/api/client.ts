@@ -283,6 +283,31 @@ export const ProjectsAPI = {
       return data;
     },
   },
+
+  // ─── Events (phase 07 — Logs view) ───────────────────────────
+  events: {
+    list: async (
+      projectId: string,
+      opts: { kind?: string[]; limit?: number; cursor?: string } = {},
+    ): Promise<{
+      project_id: string;
+      events: ProjectEventRow[];
+      next_cursor: string | null;
+    }> => {
+      // FastAPI parses `?kind=foo&kind=bar` into `list[str]`. Axios
+      // serialises an array as repeated keys, which is what we want.
+      const params: Record<string, string | number | string[]> = {};
+      if (opts.kind && opts.kind.length) params.kind = opts.kind;
+      if (opts.limit) params.limit = opts.limit;
+      if (opts.cursor) params.cursor = opts.cursor;
+      const { data } = await api.get<{
+        project_id: string;
+        events: ProjectEventRow[];
+        next_cursor: string | null;
+      }>(`/projects/${projectId}/events`, { params });
+      return data;
+    },
+  },
 };
 
 export default api;
@@ -381,4 +406,28 @@ export interface AttackStartBody {
   mode: AttackMode;
   target_node_id?: string;
   target_ip?: string;
+}
+
+// ─── Phase 07 — Logs view shapes ──────────────────────────────────
+
+export type ProjectEventKind =
+  | 'lifecycle'
+  | 'node_started'
+  | 'node_stopped'
+  | 'link_created'
+  | 'bridge_created'
+  | 'message_sent'
+  | 'anomaly'
+  | 'attack_signal'
+  | 'error';
+
+export interface ProjectEventRow {
+  id: string;
+  project_id: string;
+  ts: string | null;
+  kind: ProjectEventKind;
+  summary: string;
+  detail: Record<string, unknown>;
+  node_id: string | null;
+  link_id: string | null;
 }

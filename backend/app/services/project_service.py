@@ -521,6 +521,24 @@ async def add_link(
     link.capture = ProjectCapture(status="idle", packet_count=0)
     await session.commit()
     await session.refresh(link)
+
+    # M4 phase 07 — emit a link_created event.
+    try:
+        from app.services import event_service
+        await event_service.emit_link_created(
+            session,
+            project_id,
+            link_id=link.id,
+            iface_a_id=body.iface_a_id,
+            iface_b_id=body.iface_b_id,
+            subnet_cidr=subnet_cidr,
+        )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "[service] failed to emit link_created event for %s", link.id,
+        )
+
     return link
 
 

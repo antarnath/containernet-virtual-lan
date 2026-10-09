@@ -29,7 +29,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -878,6 +878,107 @@ async def list_messages(
         session, project_id, node_id=node_id, limit=limit
     )
     return {"project_id": project_id, "node_id": node_id, "messages": rows}
+
+
+# ─── Phase 07 — Logs view ────────────────────────────────────────────
+
+
+@router.get("/{project_id}/events")
+async def list_events(
+    project_id: str,
+    kind: list[str] | None = Query(default=None, description="Filter by event kind (repeatable)"),
+    limit: int = Query(default=100, ge=1, le=500),
+    cursor: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+):
+    """List project events (newest first) for the LogsView.
+
+    The optional ``kind`` filter is multi-valued (?kind=anomaly&kind=attack_signal)
+    so the filter chips can compose. ``cursor`` is the opaque id of the
+    last event the client already has; the response returns strictly
+    older events. Default page size 100, capped at 500.
+    """
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    from app.models import ProjectEvent
+    stmt = select(ProjectEvent).where(ProjectEvent.project_id == project_id)
+    if kind:
+        stmt = stmt.where(ProjectEvent.kind.in_(kind))
+    if cursor:
+        # Page by (created_at, id) so two events with the same
+        # millisecond still have a stable order.
+        anchor = (
+            await session.execute(
+                select(ProjectEvent).where(ProjectEvent.id == cursor)
+            )
+        ).scalars().first()
+        if anchor is not None:
+            stmt = stmt.where(
+                (ProjectEvent.ts < anchor.ts)
+                | ((ProjectEvent.ts == anchor.ts) & (ProjectEvent.id < anchor.id))
+            )
+    stmt = stmt.order_by(ProjectEvent.ts.desc(), ProjectEvent.id.desc()).limit(limit)
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return {
+        "project_id": project_id,
+        "events": [r.to_dict() for r in rows],
+        "next_cursor": rows[-1].id if rows else None,
+    }
+
+
+@router.get("/{project_id}/events/stream")
+async def stream_events(project_id: str):
+    """Server-Sent Events of new project events.
+
+    The first message is a ``hello`` marker so the client knows it's
+    connected. Subsequent messages are JSON-serialised event payloads,
+    one per ``type: "event"`` WS broadcast. The stream is
+    unidirectional; the client is expected to also poll
+    ``GET /events`` for backfill on mount / reconnect.
+    """
+    # Verify the project exists so 404 is surfaced cleanly.
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=200)
+    subscriber_id: str | None = None
+
+    async def _event_iter():
+        nonlocal subscriber_id
+        from app.services import realtime
+        subscriber_id = await realtime.subscribe(project_id, queue)
+        # Push the hello marker so the client knows it's connected.
+        await queue.put({"type": "hello", "project_id": project_id})
+        try:
+            # Initial comment so EventSource opens the connection.
+            yield ": stream open\n\n"
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Keep-alive comment.
+                    yield ": keep-alive\n\n"
+                    continue
+                yield f"data: {json.dumps(payload)}\n\n"
+        finally:
+            if subscriber_id is not None:
+                realtime.unsubscribe(project_id, subscriber_id)
+
+    return StreamingResponse(
+        _event_iter(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ─── Phase 06 — Attacks view ─────────────────────────────────────────

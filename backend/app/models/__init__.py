@@ -38,6 +38,12 @@ from app.models.attack_signal import (
     AttackSignalKind,
     SIGNAL_THRESHOLDS,
 )
+# M4 phase 07 — log timeline (union of all event sources)
+from app.models.project_event import (
+    ProjectEvent,
+    ProjectEventKind,
+    EVENT_KIND_VALUES,
+)
 
 __all__ = [
     "Base",
@@ -54,4 +60,6 @@ __all__ = [
     "Communication",
     # M4 phase 06
     "AttackSignal", "AttackSignalKind", "SIGNAL_THRESHOLDS",
+    # M4 phase 07
+    "ProjectEvent", "ProjectEventKind", "EVENT_KIND_VALUES",
 ]

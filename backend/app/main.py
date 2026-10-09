@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_router
 from app.core import init_db
 from app.core import docker_client, settings
+from app.services import anomaly_detector, attack_detector, orphan_sweeper
 
 
 @asynccontextmanager
@@ -36,9 +37,15 @@ async def lifespan(app: FastAPI):
     else:
         print("[main] admin endpoints DISABLED (ADMIN_TOKEN unset)")
 
+    # M4 phase 07 — orphan sweeper for half-started projects.
+    orphan_sweeper.start_sweeper()
+
     yield
-    # Shutdown — nothing to stop in phase 01. Phase 02 will add
-    # graceful teardown of running project containers here.
+
+    # Shutdown — cancel periodic tasks.
+    orphan_sweeper.stop_sweeper()
+    anomaly_detector.stop_all()
+    attack_detector.stop_all()
 
 
 app = FastAPI(title="ContainerNet API", version="0.4.0", lifespan=lifespan)

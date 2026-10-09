@@ -218,5 +218,24 @@ async def _check_router(project_id: str, node_id: str, container_id: str) -> Non
             "created_at": ev.created_at.isoformat() if ev.created_at else None,
         })
 
+        # M4 phase 07 — also write to the unified project_events log so
+        # the LogsView shows this anomaly in the same timeline as
+        # lifecycle / link / bridge events.
+        try:
+            from app.services import event_service
+            async with AsyncSessionLocal() as es_sess:
+                await event_service.emit_anomaly(
+                    es_sess,
+                    project_id,
+                    anomaly_id=ev.id,
+                    node_id=ev.node_id,
+                    kind=ev.kind,
+                    severity=ev.severity,
+                    summary=ev.summary,
+                    detail=ev.detail,
+                )
+        except Exception:
+            log.exception("[anomaly] failed to emit project_event for %s", ev.id)
+
 
 # ─── helpers ──────────────────────────────────────────────────────────

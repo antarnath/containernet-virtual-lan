@@ -209,6 +209,13 @@ export default function ProjectCanvas() {
             </Button>
           )}
           <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(`/projects/${current.id}/logs`)}
+          >
+            ≡ Logs
+          </Button>
+          <Button
             variant="accent"
             size="sm"
             onClick={() => setTriggerOpen(true)}

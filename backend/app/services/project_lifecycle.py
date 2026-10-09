@@ -43,7 +43,15 @@ from app.models import (
     ProjectNode,
     ProjectStatus,
 )
-from app.services import anomaly_detector, attack_detector, container_service, link_service, node_service, packet_service
+from app.services import (
+    anomaly_detector,
+    attack_detector,
+    container_service,
+    event_service,
+    link_service,
+    node_service,
+    packet_service,
+)
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +94,11 @@ async def start_project(
     backend_network = settings.BACKEND_NETWORK
     backend_url = settings.BACKEND_URL
 
+    # M4 phase 07 — first event: project is starting.
+    await event_service.emit_lifecycle(
+        session, project.id, state="starting", detail={"nodes": len(project.nodes), "links": len(project.links)},
+    )
+
     # Step 1: every bridge first (so node attachment always finds
     # the bridge it expects).
     for link in project.links:
@@ -105,9 +118,23 @@ async def start_project(
             link.docker_bridge_name = bridge.short_name
             link.docker_network_id = bridge.network_id
             result.started_bridges.append(bridge.network_id)
+            # M4 phase 07 — bridge event.
+            await event_service.emit_bridge_created(
+                session,
+                project.id,
+                link_id=link.id,
+                bridge_name=bridge.short_name,
+                subnet_cidr=bridge.subnet_cidr,
+            )
         except Exception as exc:
             result.errors.append(f"bridge {link.id}: {exc}")
             log.exception("[lifecycle] bridge create failed for link %s", link.id)
+            await event_service.emit_error(
+                session,
+                project.id,
+                summary=f"Bridge create failed: {exc}",
+                detail={"link_id": link.id, "phase": "bridge_create"},
+            )
             await _set_error(session, project, result, "start")
             return result
 
@@ -168,9 +195,23 @@ async def start_project(
             node.container_id = spawned.container_id
             node.container_status = "running"
             result.started_nodes.append(node.id)
+            # M4 phase 07 — node_started event.
+            await event_service.emit_node_started(
+                session,
+                project.id,
+                node_id=node.id,
+                node_name=node.name,
+                node_kind=node.kind.value if hasattr(node.kind, "value") else str(node.kind),
+            )
         except Exception as exc:
             result.errors.append(f"node {node.name}: {exc}")
             log.exception("[lifecycle] node spawn failed for %s", node.name)
+            await event_service.emit_error(
+                session,
+                project.id,
+                summary=f"Node {node.name!r} spawn failed: {exc}",
+                detail={"node_id": node.id, "phase": "node_spawn"},
+            )
             await _set_error(session, project, result, "start")
             return result
 
@@ -178,6 +219,10 @@ async def start_project(
     project.status = ProjectStatus.RUNNING
     await session.commit()
     result.status = "running"
+    # M4 phase 07 — lifecycle: running.
+    await event_service.emit_lifecycle(
+        session, project.id, state="running", detail={"nodes": len(result.started_nodes)},
+    )
     # M4 phase 03 — start polling routers for ARP anomalies.
     anomaly_detector.start_polling(project.id)
     # M4 phase 06 — start polling attackers for signal detection.
@@ -204,6 +249,11 @@ async def stop_project(
 
     result = LifecycleResult(project_id=project_id, status="stopping")
 
+    # M4 phase 07 — first event: project is stopping.
+    await event_service.emit_lifecycle(
+        session, project.id, state="stopping", detail={"nodes": len(project.nodes)},
+    )
+
     # M4 phase 04 — per-link captures are driven by the node
     # containers (each node tcpdumps the interface it's attached
     # to for that link). Stopping the node containers below also
@@ -223,9 +273,19 @@ async def stop_project(
             except Exception as exc:
                 result.errors.append(f"stop node {node.name}: {exc}")
                 log.warning("[lifecycle] stop node %s: %s", node.name, exc)
+                # Don't crash on this — best-effort stop.
             node.container_id = None
             node.container_status = "stopped"
             result.started_nodes.append(node.id)
+            # M4 phase 07 — node_stopped event (after the container is
+            # actually gone; the order doesn't matter to the timeline).
+            await event_service.emit_node_stopped(
+                session,
+                project.id,
+                node_id=node.id,
+                node_name=node.name,
+                node_kind=node.kind.value if hasattr(node.kind, "value") else str(node.kind),
+            )
 
     # Then bridges.
     for link in project.links:
@@ -247,6 +307,10 @@ async def stop_project(
     project.status = ProjectStatus.STOPPED
     await session.commit()
     result.status = "stopped"
+    # M4 phase 07 — lifecycle: stopped.
+    await event_service.emit_lifecycle(
+        session, project.id, state="stopped", detail={"stopped_nodes": len(result.started_nodes)},
+    )
     # M4 phase 03 — stop the anomaly poller; the routers are gone.
     anomaly_detector.stop_polling(project.id)
     # M4 phase 06 — stop the attack signal poller.
@@ -377,6 +441,19 @@ async def _set_error(
     project.status = ProjectStatus.ERROR
     await session.commit()
     result.status = "error"
+    # M4 phase 07 — emit a lifecycle event for the error transition so
+    # the LogsView shows "Project error" in the timeline. The detailed
+    # cause was already emitted by the caller (e.g. "Bridge create
+    # failed: ...").
+    try:
+        await event_service.emit_lifecycle(
+            session,
+            project.id,
+            state=f"error ({op})",
+            detail={"errors": result.errors},
+        )
+    except Exception:
+        log.exception("[lifecycle] emit error event failed")
     # Best-effort rollback: stop whatever we started so a retry
     # starts from a clean slate.
     try:

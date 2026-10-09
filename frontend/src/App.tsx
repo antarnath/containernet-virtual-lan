@@ -18,6 +18,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import ProjectCanvas from './pages/ProjectCanvas';
 import WireView from './pages/WireView';
 import { AttacksView } from './attacks/AttacksView';
+import { LogsView } from './logs/LogsView';
 
 export default function App() {
   return (
@@ -37,6 +38,10 @@ export default function App() {
           <Route
             path="/projects/:projectId/attacks"
             element={<AttacksView />}
+          />
+          <Route
+            path="/projects/:projectId/logs"
+            element={<LogsView />}
           />
         </Route>
       </Routes>

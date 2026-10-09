@@ -274,3 +274,23 @@ async def _fire_signal(
         "window_sec": WINDOW_SEC,
         "created_at": created_at,
     })
+
+    # M4 phase 07 — also write to the unified project_events log so the
+    # LogsView shows this signal in the same timeline as lifecycle /
+    # link / anomaly events.
+    try:
+        from app.services import event_service
+        async with AsyncSessionLocal() as es_sess:
+            await event_service.emit_attack_signal(
+                es_sess,
+                project_id,
+                signal_id=sig_id,
+                attacker_node_id=attacker_id,
+                victim_node_id=victim_id,
+                signal_kind=signal_kind,
+                value=value,
+                threshold=threshold,
+                window_sec=WINDOW_SEC,
+            )
+    except Exception:
+        log.exception("[attack] failed to emit project_event for %s", sig_id)

@@ -17,10 +17,14 @@
 //   { type: "packet", id, link_id, protocol, src_node_kind, ... }
 //     ← broadcast from the per-link packet streamer so the canvas
 //       can animate a dot along the wire each time a packet crosses.
+//   { type: "event", id, project_id, ts, kind, summary, detail, ... }
+//     ← fires from event_service for lifecycle / node / link / bridge
+//       / message / anomaly / attack_signal / error events. This is
+//       the same row the LogsView reads.
 //   { type: "ping" }   ← heartbeat every 25s (no payload we care about)
 
 import { create } from 'zustand';
-import { ProjectsAPI, type AnomalyEvent } from '../api/client';
+import { ProjectsAPI, type AnomalyEvent, type ProjectEventRow } from '../api/client';
 
 export interface RealtimePacketEvent {
   id: number;
@@ -45,6 +49,7 @@ export interface RealtimeAttackSignal {
 
 const PACKET_RING_SIZE = 20;
 const SIGNAL_RING_SIZE = 50;
+const EVENT_RING_SIZE = 200;
 const ACTIVE_ATTACKER_TIMEOUT_MS = 10_000;
 type PacketRing = Map<string, RealtimePacketEvent[]>;
 type AttackSignalsByAttacker = Map<string, RealtimeAttackSignal[]>;
@@ -59,6 +64,9 @@ interface RealtimeState {
   /** Attacker IDs that have produced at least one signal in the last
    *  ACTIVE_ATTACKER_TIMEOUT_MS — drives the canvas red ring. */
   activeAttackers: Set<string>;
+  /** Project events (the unified timeline). Newest first. Capped at
+   *  EVENT_RING_SIZE to keep memory bounded. */
+  events: ProjectEventRow[];
   /** WS connection state. */
   wsState: 'idle' | 'connecting' | 'open' | 'closed';
   /** IDs the user has dismissed (locally). We strip them out of the
@@ -78,6 +86,7 @@ interface RealtimeState {
   _ingestTestEvent: (ev: AnomalyEvent) => void;
   _ingestPacket: (ev: RealtimePacketEvent) => void;
   _ingestAttackSignal: (ev: RealtimeAttackSignal) => void;
+  _ingestEvent: (ev: ProjectEventRow) => void;
   pruneActiveAttackers: () => void;
 }
 
@@ -126,6 +135,8 @@ function openSocket(projectId: string) {
         useRealtimeStore.getState()._ingestPacket(msg as RealtimePacketEvent);
       } else if (msg.type === 'attack_signal') {
         useRealtimeStore.getState()._ingestAttackSignal(msg as RealtimeAttackSignal);
+      } else if (msg.type === 'event') {
+        useRealtimeStore.getState()._ingestEvent(msg as ProjectEventRow);
       }
     } catch {
       // ignore malformed
@@ -149,6 +160,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
   anomalies: [],
   attackSignals: new Map(),
   activeAttackers: new Set(),
+  events: [],
   wsState: 'idle',
   dismissedIds: new Set(),
   packetsByLink: new Map(),
@@ -163,6 +175,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       anomalies: [],
       attackSignals: new Map(),
       activeAttackers: new Set(),
+      events: [],
       dismissedIds: new Set(),
       packetsByLink: new Map(),
     });
@@ -178,6 +191,13 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       }));
     }).catch(() => {
       // ignore — polling endpoints still work
+    });
+    // Same idea for the event timeline — backfill on connect.
+    void ProjectsAPI.events.list(projectId, { limit: 100 }).then((res) => {
+      if (get().projectId !== projectId) return;
+      set({ events: res.events || [] });
+    }).catch(() => {
+      // ignore
     });
     openSocket(projectId);
   },
@@ -196,6 +216,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       anomalies: [],
       attackSignals: new Map(),
       activeAttackers: new Set(),
+      events: [],
       wsState: 'idle',
       packetsByLink: new Map(),
     });
@@ -256,6 +277,15 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       const active = new Set(s.activeAttackers);
       active.add(ev.attacker_node_id);
       return { attackSignals: next, activeAttackers: active };
+    });
+  },
+
+  _ingestEvent: (ev) => {
+    if (!ev || !ev.id) return;
+    set((s) => {
+      if (s.events.some((e) => e.id === ev.id)) return s;
+      const next = [ev, ...s.events].slice(0, EVENT_RING_SIZE);
+      return { events: next };
     });
   },
 

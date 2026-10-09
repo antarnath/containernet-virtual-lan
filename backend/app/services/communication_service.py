@@ -215,6 +215,29 @@ async def send_message(
     except Exception as exc:
         log.debug("[comm] broadcast failed (non-fatal): %s", exc)
 
+    # M4 phase 07 — write to the unified project_events log so the
+    # LogsView shows this message in the same timeline.
+    try:
+        from app.services import event_service
+        await event_service.emit_message_sent(
+            session,
+            project_id,
+            src_node_id=src_node_id,
+            src_node_name=src_node.name,
+            dst_node_id=dst_node_id or "",
+            dst_node_name=dst_node.name if dst_node else dst_ip,
+            protocol=protocol,
+            detail_extra={
+                "comm_id": comm_id,
+                "status": status,
+                "dst_ip": dst_ip,
+                "hops_count": len(hop_link_ids),
+                "payload_size": len(payload or "") if isinstance(payload, str) else None,
+            },
+        )
+    except Exception:
+        log.exception("[comm] failed to emit project_event for message %s", comm_id)
+
     return SendResult(
         comm_id=comm_id,
         status=status,
