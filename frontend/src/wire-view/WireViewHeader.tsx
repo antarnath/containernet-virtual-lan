@@ -23,6 +23,17 @@ interface WireViewHeaderProps {
   onClear: () => void;
   /** Optional link count so the user can see "N packets" in the bar. */
   packetCount: number;
+  /**
+   * Phase 04 follow-up — wire removal. Clicking the edge on the canvas
+   * navigates straight into the wire view, so React Flow never gets a
+   * chance to select the edge and the keyboard "Delete" key has nothing
+   * to act on. We expose a button in the header so the user has a
+   * reliable, single-click path to remove the wire. Caller handles
+   * the actual `deleteLink` call + navigation back to the canvas.
+   */
+  onDeleteWire?: () => void;
+  /** Disable the delete button while the request is in flight. */
+  deleting?: boolean;
 }
 
 const STATUS_TONE: Record<ProjectStatus, StatusTone> = {
@@ -49,6 +60,8 @@ export function WireViewHeader({
   onTogglePause,
   onClear,
   packetCount,
+  onDeleteWire,
+  deleting,
 }: WireViewHeaderProps) {
   const navigate = useNavigate();
   return (
@@ -87,6 +100,18 @@ export function WireViewHeader({
       <Button variant="ghost" size="sm" onClick={onClear} aria-label="Clear buffer">
         Reset
       </Button>
+      {onDeleteWire && (
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={onDeleteWire}
+          loading={deleting}
+          aria-label="Delete this wire"
+          title="Delete this wire"
+        >
+          Delete wire
+        </Button>
+      )}
     </div>
   );
 }

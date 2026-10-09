@@ -39,6 +39,8 @@ export default function WireView() {
   const error = useProjectStore((s) => s.currentError);
   const fetchProject = useProjectStore((s) => s.fetchProject);
   const clearCurrent = useProjectStore((s) => s.clearCurrent);
+  const deleteLink = useProjectStore((s) => s.deleteLink);
+  const actionInFlight = useProjectStore((s) => s.actionInFlight);
 
   // Connect the realtime store so canvas / other consumers stay in sync.
   useEffect(() => {
@@ -87,6 +89,30 @@ export default function WireView() {
   const handleClear = useCallback(() => {
     clear();
   }, [clear]);
+
+  // Phase 04 follow-up — wire removal. The canvas's `onEdgeClick`
+  // navigates here instead of selecting the edge (so React Flow's
+  // keyboard delete never fires). We expose a confirm-then-delete
+  // button in the header. After the API call lands, bounce back to
+  // the canvas so the user sees the edge disappear.
+  const handleDeleteWire = useCallback(() => {
+    if (!projectId || !linkId || !link) return;
+    const label = link.subnet_cidr || link.id.slice(0, 8);
+    const ok = window.confirm(
+      `Delete the wire "${label}"? This disconnects the two interfaces permanently.`,
+    );
+    if (!ok) return;
+    deleteLink(projectId, linkId)
+      .then(() => {
+        toast.success('Wire deleted', `Wire ${label} was removed.`);
+        navigate(`/projects/${projectId}/canvas`);
+      })
+      .catch((e) => {
+        toast.error('Could not delete wire', String(e?.message ?? e));
+      });
+  }, [projectId, linkId, link, deleteLink, navigate]);
+
+  const deleting = actionInFlight === 'delete-link';
 
   if (error) {
     return (
@@ -156,6 +182,8 @@ export default function WireView() {
         onTogglePause={handleTogglePause}
         onClear={handleClear}
         packetCount={packets.length}
+        onDeleteWire={handleDeleteWire}
+        deleting={deleting}
       />
       <WireViewTabs
         active={tab}
