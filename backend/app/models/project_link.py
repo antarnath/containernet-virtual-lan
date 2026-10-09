@@ -105,6 +105,13 @@ class ProjectLink(Base):
     docker_bridge_name: Mapped[str | None] = mapped_column(
         String(20), nullable=True
     )
+    # M4 phase 04 — the Docker network id (full 64-char hex). The capture
+    # container entrypoint uses this to derive the actual interface name
+    # (e.g. ``br-<network_id_prefix>``) when the friendly alias isn't
+    # resolvable yet. NULL while the project is in draft.
+    docker_network_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )

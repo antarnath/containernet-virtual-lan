@@ -23,16 +23,20 @@ Endpoints (see phases/milestone-4/phase_m4-01 §1.3 for the full list)
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import get_session
 from app.models import AnomalyEvent, NodeKind
-from app.services import anomaly_detector, project_lifecycle, project_service, router_proxy
+from app.services import anomaly_detector, packet_service, project_lifecycle, project_service, realtime, router_proxy
 
 log = logging.getLogger(__name__)
 from app.schemas.project import (
@@ -532,6 +536,114 @@ async def get_project_state(
         return await project_lifecycle.project_state(session, project_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ─── Phase 04 — per-link packet stream (SSE) ─────────────────────────
+
+@router.get("/{project_id}/links/{link_id}/packets/stream")
+async def stream_link_packets(
+    project_id: str,
+    link_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Server-Sent Events stream of packet events for one wire.
+
+    Each frame is ``data: <json>\\n\\n`` where <json> is a
+    PacketEvent. Frames are flushed immediately so the browser's
+    EventSource sees packets in real time. A comment line
+    ``: keep-alive\\n\\n`` is sent every 15s to keep the connection
+    open through intermediate proxies.
+
+    The client closes the connection when the user navigates away;
+    the streaming generator stops on its own when the file stops
+    growing for too long (the capture container has been stopped).
+    """
+    # Validate the project + link exist (404 otherwise).
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    link_exists = any(l.id == link_id for l in project.links)
+    if not link_exists:
+        raise HTTPException(status_code=404, detail="link not found")
+
+    stop_event = threading.Event()
+
+    def event_stream():
+        # Heartbeat thread: every 15s, push a comment so the
+        # connection isn't closed by intermediaries.
+        def heartbeat():
+            while not stop_event.is_set():
+                stop_event.wait(15.0)
+                if stop_event.is_set():
+                    return
+                # The generator below handles its own writes; we
+                # can't interleave with it from a different thread
+                # without a queue, so we keep the heartbeat inline
+                # below. This stub stays for clarity.
+        # Inline heartbeat: we yield the comment every 15 packets
+        # or every ~15s by tracking wall time.
+        last_hb = datetime.now(timezone.utc)
+        try:
+            yield ": connected\n\n"
+            for pkt in packet_service.sync_iter_packets(
+                project_id, link_id, stop_event
+            ):
+                # Also broadcast over the project's WebSocket so the
+                # canvas dot animation can pick it up.
+                # NOTE: broadcast is async; fire-and-forget here.
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(
+                            realtime.broadcast_project_event(
+                                project_id,
+                                {"type": "packet", **pkt},
+                            )
+                        )
+                except Exception:
+                    # No loop / already closed — best effort.
+                    pass
+                yield f"data: {json.dumps(pkt, separators=(',', ':'))}\n\n"
+                now = datetime.now(timezone.utc)
+                if (now - last_hb).total_seconds() >= 15.0:
+                    yield ": keep-alive\n\n"
+                    last_hb = now
+        finally:
+            stop_event.set()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable Nginx buffering
+        },
+    )
+
+
+@router.get("/{project_id}/packets/recent")
+async def recent_packets(
+    project_id: str,
+    link_id: str | None = None,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the most recent N packets for a project (or one link).
+
+    Used by the canvas to draw dot animations on the wires — a
+    lightweight REST poll that complements the per-link SSE stream.
+    """
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    limit = max(1, min(limit, 200))
+    return {
+        "project_id": project_id,
+        "link_id": link_id,
+        "packets": packet_service.get_recent_packets(
+            project_id, link_id, limit=limit
+        ),
+    }
 
 
 # ─── Phase 03 — per-node live state + anomalies ──────────────────────

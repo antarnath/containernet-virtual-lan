@@ -5,12 +5,16 @@
 # M4 phase 03: router_proxy + anomaly_detector are exported so the
 # API + lifecycle can call them. realtime is exported so the WebSocket
 # endpoint and the detector can share the same broadcast helper.
+#
+# M4 phase 04: packet_service (per-link packet classification + SSE
+# stream tail) is exported so the API can serve the wire view.
 
 from . import (
     anomaly_detector,
     container_service,
     link_service,
     node_service,
+    packet_service,
     project_lifecycle,
     project_service,
     realtime,
@@ -22,6 +26,7 @@ __all__ = [
     "container_service",
     "link_service",
     "node_service",
+    "packet_service",
     "project_lifecycle",
     "project_service",
     "realtime",

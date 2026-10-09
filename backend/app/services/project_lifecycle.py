@@ -43,7 +43,7 @@ from app.models import (
     ProjectNode,
     ProjectStatus,
 )
-from app.services import anomaly_detector, container_service, link_service, node_service
+from app.services import anomaly_detector, container_service, link_service, node_service, packet_service
 
 log = logging.getLogger(__name__)
 
@@ -99,15 +99,49 @@ async def start_project(
                 iface_b_ip=b.ip_address if b else None,
                 iface_b_mask=b.subnet_mask if b else None,
             )
-            # Persist the chosen bridge name on the link row so the
-            # capture / router proxy can find it later.
+            # Persist the chosen bridge name + Docker network id on
+            # the link row so the capture / router proxy can find
+            # them later without re-deriving.
             link.docker_bridge_name = bridge.short_name
+            link.docker_network_id = bridge.network_id
             result.started_bridges.append(bridge.network_id)
         except Exception as exc:
             result.errors.append(f"bridge {link.id}: {exc}")
             log.exception("[lifecycle] bridge create failed for link %s", link.id)
             await _set_error(session, project, result, "start")
             return result
+
+    # M4 phase 04 — per-link packet capture. Each spawned node
+    # starts a background tcpdump on the interface it's attached
+    # to for that link (see node_service.spawn_node). All nodes on
+    # the same link write to the same NDJSON file
+    # (/var/lib/containernet/captures/<proj8>l<link4>.ndjson)
+    # concurrently; the SSE stream tails that file.
+    #
+    # We don't spawn a sidecar capture container any more — a
+    # Linux bridge's fast-forward path bypasses AF_PACKET, so
+    # tcpdump on the bridge itself never sees host→host unicast.
+    # The node's veth, in the node's own netns, sees every frame
+    # that crosses the link.
+    #
+    # Mark the link as "capture running" optimistically. The
+    # actual tcpdump processes are tracked by the node containers
+    # themselves; if one fails, the NDJSON file just stops growing
+    # and the SSE stream sees a stall (which is the right UX).
+    for link in project.links:
+        if not link.docker_network_id or not link.docker_bridge_name:
+            continue
+        if link.capture is not None:
+            # Sentinel value: we don't have a single container id
+            # for the capture (it's distributed across the nodes).
+            # The frontend treats any non-null container_id as
+            # "capturing"; the actual NDJSON file is the source of
+            # truth for the SSE stream.
+            link.capture.container_id = f"node-driven:{project.id[:8]}:{link.id[:4]}"
+            link.capture.status = "running"
+    # Build the MAC table now (after all containers are up) so the
+    # packet streamer can tag packets with the right src_node_kind.
+    packet_service.invalidate_project(project.id)
 
     # Step 2: spawn every node. Routers are spawned first so they're
     # up before any host that needs them as a default gateway.
@@ -168,6 +202,16 @@ async def stop_project(
 
     result = LifecycleResult(project_id=project_id, status="stopping")
 
+    # M4 phase 04 — per-link captures are driven by the node
+    # containers (each node tcpdumps the interface it's attached
+    # to for that link). Stopping the node containers below also
+    # stops the per-node tcpdumps. We just clear the link's
+    # capture state here.
+    for link in project.links:
+        if link.capture is not None:
+            link.capture.container_id = None
+            link.capture.status = "idle"
+
     # Nodes first.
     for node in project.nodes:
         if node.container_id:
@@ -188,10 +232,15 @@ async def stop_project(
                 project_id=project.id, link_id=link.id
             )
             link.docker_bridge_name = None
+            link.docker_network_id = None
             result.started_bridges.append(link.id)
         except Exception as exc:
             result.errors.append(f"delete bridge {link.id}: {exc}")
             log.warning("[lifecycle] delete bridge %s: %s", link.id, exc)
+
+    # Drop the cached MAC table + recent-packets ring buffer.
+    packet_service.invalidate_project(project.id)
+    packet_service.reset_recent(project.id)
 
     project.status = ProjectStatus.STOPPED
     await session.commit()
@@ -249,11 +298,14 @@ async def project_state(
     links = []
     for link in project.links:
         bridge = link_service.find_bridge_by_link_id(project.id, link.id) if link.docker_bridge_name else None
+        cap = link.capture
         links.append({
             "id": link.id,
             "iface_a_id": link.iface_a_id,
             "iface_b_id": link.iface_b_id,
             "docker_bridge_name": link.docker_bridge_name,
+            "docker_network_id": link.docker_network_id,
+            "subnet_cidr": link.subnet_cidr,
             "bridge": (
                 {
                     "network_id": bridge.network_id,
@@ -262,6 +314,16 @@ async def project_state(
                     "subnet_cidr": bridge.subnet_cidr,
                 }
                 if bridge else None
+            ),
+            "capture": (
+                {
+                    "id": cap.id,
+                    "container_id": cap.container_id,
+                    "status": cap.status,
+                    "last_packet_at": cap.last_packet_at.isoformat() if cap.last_packet_at else None,
+                    "packet_count": cap.packet_count,
+                }
+                if cap else None
             ),
         })
 
@@ -278,12 +340,13 @@ async def project_state(
 async def _load_project(
     session: AsyncSession, project_id: str
 ) -> Project | None:
+    from app.models import ProjectCapture, ProjectLink
     stmt = (
         select(Project)
         .where(Project.id == project_id)
         .options(
             selectinload(Project.nodes).selectinload(ProjectNode.interfaces),
-            selectinload(Project.links),
+            selectinload(Project.links).selectinload(ProjectLink.capture),
         )
     )
     result = await session.execute(stmt)

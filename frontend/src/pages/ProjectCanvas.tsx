@@ -91,6 +91,16 @@ export default function ProjectCanvas() {
     setOpenNode(null);
   }, []);
 
+  // Phase 04 — clicking a wire on the canvas navigates to the
+  // per-wire live packet stream.
+  const handleOpenLink = useCallback(
+    (linkId: string) => {
+      if (!projectId) return;
+      navigate(`/projects/${projectId}/wires/${linkId}`);
+    },
+    [projectId, navigate],
+  );
+
   async function handleLifecycle(op: LifecycleOp) {
     if (!projectId) return;
     useProjectStore.setState({ actionInFlight: op });
@@ -222,7 +232,11 @@ export default function ProjectCanvas() {
       {/* Canvas surface + optional router panel */}
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0">
-          <Canvas projectId={current.id} onOpenNode={handleOpenNode} />
+          <Canvas
+            projectId={current.id}
+            onOpenNode={handleOpenNode}
+            onOpenLink={handleOpenLink}
+          />
         </div>
         {openNode && (
           <RouterPanel

@@ -5,7 +5,9 @@
 //   • pan/zoom → setViewport (debounced 600ms)
 //   • selection / deletion (delete / backspace on a node or edge)
 //   • click-to-open — clicking a router node fires `onOpenNode` so
-//     the parent can mount the RouterPanel (phase 03)
+//     the parent can mount the RouterPanel (phase 03). Clicking a
+//     wire fires `onOpenLink` so the parent can navigate to the
+//     wire view (phase 04).
 //
 // All CRUD goes through the project store. The store is the single
 // source of truth; React Flow's internal node state is derived from
@@ -31,6 +33,7 @@ import ReactFlow, {
   type Connection,
   type Edge,
   type EdgeChange,
+  type EdgeMouseHandler,
   type Node,
   type NodeChange,
   type NodeMouseHandler,
@@ -118,9 +121,11 @@ function randomCanvasPosition(): { canvas_x: number; canvas_y: number } {
 function CanvasInner({
   projectId,
   onOpenNode,
+  onOpenLink,
 }: {
   projectId: string;
   onOpenNode?: (p: OpenNodePayload) => void;
+  onOpenLink?: (linkId: string) => void;
 }) {
   const current = useProjectStore((s) => s.current);
   const fetchProject = useProjectStore((s) => s.fetchProject);
@@ -306,6 +311,15 @@ function CanvasInner({
     [onOpenNode],
   );
 
+  // ─── click to open a wire's view (phase 04) ───────────────────
+  const onEdgeClick: EdgeMouseHandler = useCallback(
+    (_e, edge) => {
+      if (!onOpenLink) return;
+      onOpenLink(edge.id);
+    },
+    [onOpenLink],
+  );
+
   // Debounced viewport save.
   const viewportTimer = useRef<number | null>(null);
   const onMoveEnd: NonNullable<ReactFlowProps['onMoveEnd']> = useCallback(
@@ -386,6 +400,7 @@ function CanvasInner({
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onNodeClick={onNodeClick}
+          onEdgeClick={onEdgeClick}
           onInit={(inst) => {
             rfInstance.current = inst;
           }}
@@ -456,7 +471,11 @@ function CanvasInner({
 
 // ─── Public component (wraps the provider so RF hooks work) ─────────────
 
-export function Canvas(props: { projectId: string; onOpenNode?: (p: OpenNodePayload) => void }) {
+export function Canvas(props: {
+  projectId: string;
+  onOpenNode?: (p: OpenNodePayload) => void;
+  onOpenLink?: (linkId: string) => void;
+}) {
   return (
     <ReactFlowProvider>
       <CanvasInner {...props} />

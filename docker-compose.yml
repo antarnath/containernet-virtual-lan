@@ -46,6 +46,9 @@ services:
       # M4 phase 02 — the spawned router agents read /app/router-agent at
       # runtime. Same live-edit pattern as host-agent.
       - ./router-agent:/app/router-agent:ro
+      # M4 phase 04 — per-link capture containers write their NDJSON
+      # here; the backend tails these files to drive the SSE stream.
+      - /var/lib/containernet/captures:/var/lib/containernet/captures:rw
     # M2-07 §2.4 — per-project capture container requires the backend to
     # toggle the bridge's per-port promiscuous flag so host→host unicast
     # frames get flooded to the capture container's port. Without

@@ -11,12 +11,15 @@ other unrelated containers are running on the host.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import docker
 from docker.errors import APIError, NotFound
 
 from app.core.docker_client import get_docker_client
+
+log = logging.getLogger(__name__)
 
 
 # The label we put on every container this service creates. Listing with
@@ -548,6 +551,154 @@ def get_project_capture_container(project_id: str) -> dict | None:
     None if there isn't one."""
     client = get_docker_client()
     name = _capture_container_name(project_id)
+    try:
+        c = client.containers.get(name)
+        return {
+            "id": c.id,
+            "name": c.name,
+            "status": c.status,
+            "image": c.image.tags[0] if c.image.tags else str(c.image.id),
+        }
+    except NotFound:
+        return None
+
+
+# ─── per-link capture (M4 phase 04) ──────────────────────────────────────
+# Replaces the M2 single-capture-per-project design. M4 follows the
+# "one container per node, one bridge per wire" rule, so each wire gets
+# its own passive sniffer attached only to that wire's bridge.
+#
+# The capture runs in the host network namespace and tcpdumps the
+# bridge interface directly. Same image / cap_add / volume pattern as
+# the M2 capture, but the env vars + name + labels are per-link so we
+# can find a single link's capture later (for the SSE stream).
+
+LABEL_LINK_CAPTURE = "containernet.link_capture"
+LABEL_LINK_ID = "containernet.link_id"
+
+
+def _link_capture_container_name(project_id: str, link_id: str) -> str:
+    """Linux-bridge-friendly name for a per-link capture container.
+
+    Format: ``cn<8>l<4>cap`` = 15 chars (Linux IFNAMSIZ is 15).
+    """
+    p = _short_project_id(project_id)[:8]
+    l = link_id.replace("-", "")[:4]
+    return f"cn{p}l{l}cap"[:15]
+
+
+def spawn_link_capture(
+    *,
+    project_id: str,
+    link_id: str,
+    network_id: str,
+    bridge_name: str,
+    short_bridge_name: str | None = None,
+    image: str = CAPTURE_IMAGE,
+) -> str:
+    """Spawn one capture container for a single link. Returns its container ID.
+
+    The container is started in the host netns so it can tcpdump the
+    link's bridge interface directly. We pass the bridge's friendly
+    name AND the Docker network id; the entrypoint uses whichever
+    shows up first in ``ip link show``.
+
+    Idempotent: if a capture container for this link already exists,
+    reuse it (so a partial start can be resumed).
+    """
+    client = get_docker_client()
+    name = _link_capture_container_name(project_id, link_id)
+
+    # Reuse if already present (covers "start twice in a row" and
+    # "partial start resumed").
+    try:
+        existing = client.containers.get(name)
+        if existing.status != "running":
+            existing.start()
+        return existing.id
+    except NotFound:
+        pass
+
+    container = client.containers.run(
+        image=image,
+        name=name,
+        command=None,  # use the image's default CMD (capture_run.sh)
+        labels={
+            LABEL_HOST.split("=")[0]: "true",
+            LABEL_PROJECT.split("=")[0]: project_id,
+            "containernet.role": CAPTURE_ROLE,
+            LABEL_LINK_CAPTURE.split("=")[0]: "true",
+            LABEL_LINK_ID.split("=")[0]: link_id,
+        },
+        network_mode="host",
+        pid_mode="host",
+        cap_add=["NET_RAW", "NET_ADMIN"],
+        volumes={
+            "/var/lib/containernet/captures": {
+                "bind": "/var/lib/containernet/captures",
+                "mode": "rw",
+            },
+        },
+        environment={
+            # The capture entrypoint waits for this bridge interface
+            # to appear in `ip link show` before starting tcpdump.
+            "PROJECT_BRIDGE_NAME": bridge_name,
+            # The Docker network id (full 64-char hex) so the
+            # entrypoint can derive ``br-<network_id_prefix>`` if the
+            # friendly name isn't yet resolvable.
+            "PROJECT_NETWORK_ID": network_id[:12] if network_id else "",
+            # Per-link NDJSON file path. The backend tails this file
+            # to drive the SSE stream.
+            "CAPTURE_FILE": f"/var/lib/containernet/captures/{name}.ndjson",
+        },
+        detach=True,
+        remove=False,
+        tty=False,
+        stdin_open=False,
+    )
+    log.info(
+        "[container_service] spawned link capture %s for link %s (bridge=%s)",
+        name, link_id, bridge_name,
+    )
+    return container.id
+
+
+def stop_link_capture(project_id: str, link_id: str, timeout: int = 2) -> bool:
+    """Stop the per-link capture container. Returns True iff a container
+    was stopped."""
+    client = get_docker_client()
+    name = _link_capture_container_name(project_id, link_id)
+    try:
+        c = client.containers.get(name)
+    except NotFound:
+        return False
+    try:
+        if c.status == "running":
+            c.stop(timeout=timeout)
+        return True
+    except APIError:
+        return False
+
+
+def remove_link_capture(project_id: str, link_id: str, force: bool = True) -> bool:
+    """Remove the per-link capture container. Returns True iff removed."""
+    client = get_docker_client()
+    name = _link_capture_container_name(project_id, link_id)
+    try:
+        c = client.containers.get(name)
+    except NotFound:
+        return False
+    try:
+        c.remove(force=force)
+        return True
+    except APIError:
+        return False
+
+
+def find_link_capture_container(project_id: str, link_id: str) -> dict | None:
+    """Return a small dict describing the link's capture container, or None."""
+    client = get_docker_client()
+    name = _link_capture_container_name(project_id, link_id)
     try:
         c = client.containers.get(name)
         return {

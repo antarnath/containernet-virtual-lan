@@ -33,5 +33,13 @@ WORKDIR /app
 # (set in docker-compose.yml), so host-agent/ resolves correctly.
 COPY host-agent /app/host-agent
 
+# M4 phase 04 — per-link packet capture wrapper. The node spawn
+# command sets NODE_CAPTURE_LINKS (one line per link this node
+# participates in: "link_id iface capture_ndjson") and invokes
+# this entrypoint, which starts a tcpdump per iface in the
+# background before execing the agent command.
+COPY infra/hosts/node_entrypoint.sh /app/node_entrypoint.sh
+RUN chmod +x /app/node_entrypoint.sh
+
 # Default command overridden in docker-compose.yml to run the agent.
 CMD ["sleep", "infinity"]

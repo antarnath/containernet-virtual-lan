@@ -111,6 +111,7 @@ class BridgeInfo:
     name: str             # Docker network name (alias)
     short_name: str       # Linux-bridge-friendly name
     subnet_cidr: str      # e.g. "10.30.10.0/24"
+    bridge_iface: str = ""  # The actual host-side interface name (e.g. "br-abc123def456")
 
 
 # ─── create / delete ───────────────────────────────────────────────────
@@ -248,14 +249,32 @@ def find_bridge_by_link_id(project_id: str, link_id: str) -> BridgeInfo | None:
     net = nets[0]
     ipam = (net.attrs.get("IPAM") or {}).get("Config") or []
     subnet = ipam[0]["Subnet"] if ipam else ""
+    short = (net.attrs.get("Options") or {}).get(
+        "com.docker.network.bridge.name", net.name
+    )
     return BridgeInfo(
         network_id=net.id,
         name=net.name,
-        short_name=(net.attrs.get("Options") or {}).get(
-            "com.docker.network.bridge.name", net.name
-        ),
+        short_name=short,
         subnet_cidr=subnet,
+        bridge_iface=_host_bridge_iface(net.id, short, net.name),
     )
+
+
+def _host_bridge_iface(network_id: str, short: str, name: str) -> str:
+    """Return the most likely host-side bridge interface name.
+
+    Docker names Linux bridges either by the user-supplied alias
+    (when the ``com.docker.network.bridge.name`` option is set, as
+    we do) or by ``br-<first 12 hex chars of network_id>``. The
+    capture entrypoint probes both, so we just return the alias —
+    the entrypoint falls back if it isn't resolvable.
+    """
+    if short:
+        return short
+    if network_id:
+        return f"br-{network_id[:12]}"
+    return name
 
 
 def list_bridges_for_project(project_id: str) -> list[BridgeInfo]:
@@ -272,14 +291,16 @@ def list_bridges_for_project(project_id: str) -> list[BridgeInfo]:
     for net in nets:
         ipam = (net.attrs.get("IPAM") or {}).get("Config") or []
         subnet = ipam[0]["Subnet"] if ipam else ""
+        short = (net.attrs.get("Options") or {}).get(
+            "com.docker.network.bridge.name", net.name
+        )
         out.append(
             BridgeInfo(
                 network_id=net.id,
                 name=net.name,
-                short_name=(net.attrs.get("Options") or {}).get(
-                    "com.docker.network.bridge.name", net.name
-                ),
+                short_name=short,
                 subnet_cidr=subnet,
+                bridge_iface=_host_bridge_iface(net.id, short, net.name),
             )
         )
     return out

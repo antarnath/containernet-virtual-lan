@@ -24,3 +24,5 @@ export type { TableColumn, TableProps } from './Table';
 
 export { AnomalyBanner } from './AnomalyBanner';
 export type { AnomalyBannerProps } from './AnomalyBanner';
+
+export { ProtocolChip } from './ProtocolChip';

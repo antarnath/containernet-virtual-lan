@@ -24,11 +24,23 @@ Wires are attached as follows:
 This service is the ONLY place in the backend that issues
 `docker run` for project nodes. The lifecycle service (project_lifecycle)
 calls into here for each node.
+
+M4 phase 04 — per-link packet capture
+-------------------------------------
+Each spawned node also starts one background tcpdump per link it
+participates in. Why per-node and not per-link sidecar? Because a
+Linux bridge's fast-forward path bypasses AF_PACKET, TC, and
+netfilter for host→host unicast — so a sidecar tcpdumping the
+bridge only sees broadcast/multicast and never the actual wire
+traffic. A node's veth, on the other hand, sees every frame on
+its link (both directions in the node's netns), so the per-node
+capture is the only reliable way to get the full wire view.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,13 +72,39 @@ KIND_IMAGE: dict[NodeKind, str] = {
     NodeKind.ATTACKER: "containernet-host-base:latest",
 }
 
-# Command per kind. None means "use the image's default CMD/ENTRYPOINT".
+# Per-link NDJSON file path. Matches the convention used by the
+# per-link capture container (and the wire-view SSE stream), so
+# the same code path reads it regardless of who writes to it.
+CAPTURE_DIR_HOST = "/var/lib/containernet/captures"
+
+
+def _link_capture_filename(project_id: str, link_id: str) -> str:
+    """Stable per-link filename. 8-char project id + 4-char link id
+    keeps the name well under Linux's 255-char filename limit and
+    trivially matches across container ↔ host paths."""
+    short_p = project_id.replace("-", "")[:8]
+    short_l = link_id.replace("-", "")[:4]
+    return f"{short_p}l{short_l}"
+
+
+def _link_capture_path(project_id: str, link_id: str) -> str:
+    """Absolute path inside the node container."""
+    return f"{CAPTURE_DIR_HOST}/{_link_capture_filename(project_id, link_id)}.ndjson"
+
+
+# Command per kind. M4 phase 04 wraps every kind's command with the
+# per-link capture wrapper (infra/hosts/node_entrypoint.sh) which
+# starts a tcpdump per iface before execing the agent. Switches have
+# no agent so we still run the wrapper (it's a no-op when no links
+# are declared) and then `sleep infinity` to keep the container up.
+_NODE_ENTRYPOINT = "/app/node_entrypoint.sh"
+
 KIND_COMMAND: dict[NodeKind, list[str] | None] = {
-    NodeKind.HOST:     ["python3", "/app/host-agent/agent.py"],
-    NodeKind.SWITCH:   None,  # image's ENTRYPOINT (sleep infinity)
-    NodeKind.ROUTER:   None,  # image's ENTRYPOINT runs the router agent
-    NodeKind.SERVER:   ["python3", "/app/host-agent/agent.py"],
-    NodeKind.ATTACKER: ["python3", "/app/host-agent/agent.py"],
+    NodeKind.HOST:     [_NODE_ENTRYPOINT, "python3", "/app/host-agent/agent.py"],
+    NodeKind.SWITCH:   [_NODE_ENTRYPOINT, "sleep", "infinity"],
+    NodeKind.ROUTER:   [_NODE_ENTRYPOINT, "python3", "/app/router-agent/agent.py"],
+    NodeKind.SERVER:   [_NODE_ENTRYPOINT, "python3", "/app/host-agent/agent.py"],
+    NodeKind.ATTACKER: [_NODE_ENTRYPOINT, "python3", "/app/host-agent/agent.py"],
 }
 
 # Extra env vars per kind.
@@ -124,6 +162,19 @@ def _iface_subnet_for_bridge(
     return str(ip) if ip in net else None
 
 
+def _apply_capture_env(container, capture_lines: list[str]) -> None:
+    """No-op (kept for backwards compat with the old sidecar model).
+
+    The per-link capture is now driven by the container's
+    ``NODE_CAPTURE_LINKS`` env, which is set at spawn time via
+    ``container.run``. For the "resume a partial start" path (when
+    the container already exists from a prior run), captures won't
+    start until the next full project start, which re-spawns every
+    node. That trade-off keeps the resume path simple.
+    """
+    return None
+
+
 # ─── public API ────────────────────────────────────────────────────────
 
 def spawn_node(
@@ -171,14 +222,23 @@ def spawn_node(
         container = client.containers.get(existing)
         if container.status != "running":
             container.start()
-        return _reattach_to_bridges(
+        # For an existing container we still recompute capture
+        # lines and re-exec the entrypoint so a previously-running
+        # capture process that died gets restarted. (Containers
+        # restarted by `container.start()` reuse the original env
+        # + command, so we re-apply NODE_CAPTURE_LINKS too.)
+        capture_lines: list[str] = []
+        result = _reattach_to_bridges(
             client=client,
             container=container,
             project=project,
             node=node,
             links=links,
             interfaces=interfaces,
+            capture_lines=capture_lines,
         )
+        _apply_capture_env(container, capture_lines)
+        return result
 
     image = KIND_IMAGE[kind]
     name = _container_name(project.id, node.id, kind)
@@ -192,6 +252,48 @@ def spawn_node(
     }
     env.update(kind_env(kind, attack_mode=node.attack_mode))
 
+    # M4 phase 04 — pre-compute the per-link tcpdump lines so the
+    # entrypoint can start the right number of captures with the
+    # right interface names. The container is created with
+    # `network="bridge"` (the docker default bridge), so eth0 is
+    # always the default bridge. The first per-link bridge we
+    # connect becomes eth1, the next eth2, and so on. We use the
+    # same dedup rules here as in _reattach_to_bridges so the
+    # indices match what gets created.
+    iface_by_id_pre = {i.id: i for i in interfaces}
+    capture_lines_pre: list[str] = []
+    eth_idx = 1  # +1 to skip the default-bridge eth0
+    seen_nets: set[str] = set()
+    for link in links:
+        on_link = (
+            link.iface_a_id in iface_by_id_pre
+            or link.iface_b_id in iface_by_id_pre
+        )
+        if not on_link:
+            continue
+        bridge = link_service.find_bridge_by_link_id(project.id, link.id)
+        if bridge is None:
+            bridge = link_service.create_bridge_for_link(
+                project_id=project.id,
+                link_id=link.id,
+                iface_a_ip=iface_by_id_pre[link.iface_a_id].ip_address
+                if link.iface_a_id in iface_by_id_pre else None,
+                iface_a_mask=iface_by_id_pre[link.iface_a_id].subnet_mask
+                if link.iface_a_id in iface_by_id_pre else None,
+                iface_b_ip=iface_by_id_pre[link.iface_b_id].ip_address
+                if link.iface_b_id in iface_by_id_pre else None,
+                iface_b_mask=iface_by_id_pre[link.iface_b_id].subnet_mask
+                if link.iface_b_id in iface_by_id_pre else None,
+            )
+        if bridge.network_id in seen_nets:
+            continue
+        seen_nets.add(bridge.network_id)
+        capture_lines_pre.append(
+            f"{link.id} eth{eth_idx} {_link_capture_path(project.id, link.id)}"
+        )
+        eth_idx += 1
+    env["NODE_CAPTURE_LINKS"] = "\n".join(capture_lines_pre)
+
     labels = {
         LABEL_HOST.split("=")[0]: "true",
         LABEL_PROJECT.split("=")[0]: project.id,
@@ -199,11 +301,29 @@ def spawn_node(
         "containernet.role": kind.value,
     }
 
-    # Routers need IP forwarding + NET_ADMIN to add routes at runtime.
-    extra_kwargs: dict[str, Any] = {"detach": True, "remove": False}
+    # Capability set. Every node kind needs:
+    #   NET_RAW  — so the per-link tcpdump can open AF_PACKET sockets
+    #              on its interfaces (M4 phase 04 packet capture).
+    #   NET_ADMIN — so the in-container entrypoint can install
+    #                `ip link` settings if needed (and the router
+    #                needs it to add routes at runtime).
+    extra_kwargs: dict[str, Any] = {
+        "detach": True,
+        "remove": False,
+        "cap_add": ["NET_RAW", "NET_ADMIN"],
+        # Shared captures directory. Every node's entrypoint writes
+        # the per-link NDJSON files into here; the backend reads
+        # them from the host side (the docker-compose bind mount
+        # exposes the same path inside the backend container).
+        "volumes": {
+            CAPTURE_DIR_HOST: {
+                "bind": CAPTURE_DIR_HOST,
+                "mode": "rw",
+            },
+        },
+    }
     if kind == NodeKind.ROUTER:
         extra_kwargs["sysctls"] = {"net.ipv4.ip_forward": 1}
-        extra_kwargs["cap_add"] = ["NET_ADMIN"]
 
     try:
         container = client.containers.run(
@@ -212,7 +332,15 @@ def spawn_node(
             environment=env,
             command=KIND_COMMAND[kind],
             labels=labels,
-            network=None,  # we'll attach manually below
+            # `network="bridge"` attaches the container to the
+            # docker default bridge (172.17.0.0/16) as eth0. This
+            # is required because Docker refuses to attach a
+            # container to multiple networks if it was created in
+            # private (none) mode. By using the default bridge we
+            # get eth0 + eth1, eth2, … for the per-link bridges.
+            # The tcpdump ethN index in NODE_CAPTURE_LINKS has +1
+            # baked in to account for the default eth0.
+            network="bridge",
             tty=False,
             stdin_open=False,
             **extra_kwargs,
@@ -223,6 +351,10 @@ def spawn_node(
             f"failed to spawn {kind.value} container for node {node.id}: {exc}"
         ) from exc
 
+    # Now that the container exists, attach it to every per-link
+    # bridge. The capture env was already set in `container.run`;
+    # _apply_capture_env is a no-op kept for symmetry with the
+    # existing-container path above.
     return _reattach_to_bridges(
         client=client,
         container=container,
@@ -243,11 +375,20 @@ def _reattach_to_bridges(
     links: list[ProjectLink],
     interfaces: list[ProjectInterface],
     backend_network: str | None = None,
+    capture_lines: list[str] | None = None,
 ) -> NodeSpawnResult:
     """Attach the container to every per-wire bridge it participates in.
 
     Also attaches to the backend's bridge (for DNS / heartbeats) for
-    node kinds that need it (host, server, attacker).
+    node kinds that need it (host, server, attacker, router).
+
+    M4 phase 04 — packet capture
+    ----------------------------
+    If ``capture_lines`` is provided, every link the container is
+    attached to gets a line of the form
+    ``<link_id> <ethN> <capture_ndjson_path>`` appended to it. The
+    container's entrypoint uses those lines to start one tcpdump per
+    link on the right interface.
     """
     kind = NodeKind(node.kind) if isinstance(node.kind, str) else node.kind
     # Routers also need backend access — not for heartbeats, but so
@@ -261,6 +402,14 @@ def _reattach_to_bridges(
     iface_by_id = {i.id: i for i in interfaces}
     attached: list[str] = []
     seen_networks: set[str] = set()
+    # Docker assigns eth0, eth1, … in the order we call
+    # `net.connect()`. Because the container is created with
+    # `network="bridge"` (the docker default bridge), eth0 is
+    # already taken. The first per-link attach becomes eth1, the
+    # next eth2, and so on. We track the index here to match the
+    # pre-computed NODE_CAPTURE_LINKS so the entrypoint tcpdumps
+    # the right interface.
+    eth_index = 1  # +1 to skip the default-bridge eth0
 
     # For each link this node participates in, attach the container
     # to the per-link bridge with a pinned IP per interface.
@@ -329,6 +478,14 @@ def _reattach_to_bridges(
                 attached.append(bridge.network_id)
                 continue
             raise
+
+        # Record the ethN for this link so the entrypoint knows
+        # which interface to tcpdump.
+        if capture_lines is not None:
+            iface_name = f"eth{eth_index}"
+            ndjson_path = _link_capture_path(project.id, link.id)
+            capture_lines.append(f"{link.id} {iface_name} {ndjson_path}")
+        eth_index += 1
 
     # Attach to the backend's bridge (for DNS / heartbeats) if needed.
     if needs_backend and backend_network:

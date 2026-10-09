@@ -11,10 +11,26 @@
 // The WS protocol (server → client):
 //   { type: "anomaly", id, node_id, kind, severity, summary,
 //     detail, created_at, resolved_at }
+//   { type: "packet", id, link_id, protocol, src_node_kind, ... }
+//     ← broadcast from the per-link packet streamer so the canvas
+//       can animate a dot along the wire each time a packet crosses.
 //   { type: "ping" }   ← heartbeat every 25s (no payload we care about)
 
 import { create } from 'zustand';
 import { ProjectsAPI, type AnomalyEvent } from '../api/client';
+
+export interface RealtimePacketEvent {
+  id: number;
+  link_id: string;
+  protocol: 'tcp' | 'udp' | 'icmp' | 'arp' | 'http' | 'other';
+  src_node_kind: string;
+  src_ip?: string;
+  dst_ip?: string;
+  ts_ns?: number;
+}
+
+const PACKET_RING_SIZE = 20;
+type PacketRing = Map<string, RealtimePacketEvent[]>;
 
 interface RealtimeState {
   /** Current project (null when not on a project page). */
@@ -27,6 +43,9 @@ interface RealtimeState {
    * banner list so a flapping event doesn't pop back in. The server
    *  also marks the row resolved (POST /anomalies/{id}/dismiss). */
   dismissedIds: Set<string>;
+  /** Most recent N packets per link (newest last), for the canvas
+   *  dot animation. Cleared on disconnect. */
+  packetsByLink: PacketRing;
 
   // ─── lifecycle ──────────────────────────────────────────────
   connect: (projectId: string) => void;
@@ -35,6 +54,7 @@ interface RealtimeState {
 
   // ─── test seam ──────────────────────────────────────────────
   _ingestTestEvent: (ev: AnomalyEvent) => void;
+  _ingestPacket: (ev: RealtimePacketEvent) => void;
 }
 
 let ws: WebSocket | null = null;
@@ -75,8 +95,11 @@ function openSocket(projectId: string) {
   socket.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
-      if (msg && msg.type === 'anomaly') {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'anomaly') {
         useRealtimeStore.getState()._ingestTestEvent(msg as AnomalyEvent);
+      } else if (msg.type === 'packet') {
+        useRealtimeStore.getState()._ingestPacket(msg as RealtimePacketEvent);
       }
     } catch {
       // ignore malformed
@@ -100,6 +123,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
   anomalies: [],
   wsState: 'idle',
   dismissedIds: new Set(),
+  packetsByLink: new Map(),
 
   connect: (projectId) => {
     const prev = get().projectId;
@@ -110,6 +134,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       projectId,
       anomalies: [],
       dismissedIds: new Set(),
+      packetsByLink: new Map(),
     });
     // Pull a fresh snapshot from the REST endpoint so the UI has the
     // full history on connect, not just whatever the WS happens to
@@ -136,7 +161,7 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       try { ws.close(); } catch { /* noop */ }
       ws = null;
     }
-    set({ projectId: null, anomalies: [], wsState: 'idle' });
+    set({ projectId: null, anomalies: [], wsState: 'idle', packetsByLink: new Map() });
   },
 
   dismissAnomaly: async (id) => {
@@ -165,6 +190,20 @@ export const useRealtimeStore = create<RealtimeState>((set, get) => ({
       // Dedup by id.
       if (s.anomalies.some((a) => a.id === ev.id)) return s;
       return { anomalies: [ev, ...s.anomalies] };
+    });
+  },
+
+  _ingestPacket: (ev) => {
+    if (!ev || !ev.link_id) return;
+    set((s) => {
+      const next = new Map(s.packetsByLink);
+      const bucket = next.get(ev.link_id) ?? [];
+      const updated = bucket.concat(ev);
+      if (updated.length > PACKET_RING_SIZE) {
+        updated.splice(0, updated.length - PACKET_RING_SIZE);
+      }
+      next.set(ev.link_id, updated);
+      return { packetsByLink: next };
     });
   },
 }));

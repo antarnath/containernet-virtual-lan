@@ -2,21 +2,21 @@
 // (sidebar + topbar + content area).
 //
 // M4 routes (this milestone):
-//   /                                 — dashboard summary
-//   /projects                         — grid of project cards
-//   /projects/:projectId/canvas       — interactive topology editor
+//   /                                       — dashboard summary
+//   /projects                               — grid of project cards
+//   /projects/:projectId/canvas             — interactive topology editor
+//   /projects/:projectId/wires/:linkId      — per-wire live packet stream
 //
 // Future M4 routes (added by later phases):
-//   /projects/:projectId/wires        — per-wire capture view
-//   /projects/:projectId/trigger      — trigger panel + console
-//   /projects/:projectId/attacks      — attack run + log
-//   /projects/:projectId/router       — router configuration panel
+//   /projects/:projectId/trigger            — trigger panel + console
+//   /projects/:projectId/attacks            — attack run + log
 
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/layout/Layout';
 import Dashboard from './pages/Dashboard';
 import ProjectsPage from './pages/ProjectsPage';
 import ProjectCanvas from './pages/ProjectCanvas';
+import WireView from './pages/WireView';
 
 export default function App() {
   return (
@@ -28,6 +28,10 @@ export default function App() {
           <Route
             path="/projects/:projectId/canvas"
             element={<ProjectCanvas />}
+          />
+          <Route
+            path="/projects/:projectId/wires/:linkId"
+            element={<WireView />}
           />
         </Route>
       </Routes>
