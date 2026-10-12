@@ -638,3 +638,40 @@ intentionally not built in M4:
 These cuts are deliberate and were trade-off decisions, not
 oversights. They are documented so future contributors don't
 add them as a "small extra."
+
+---
+
+## 14. M5-01 — Automatic IP Management (in progress)
+
+M5-01 is the first post-M4 phase. Its goal is to **stop making the
+user type every IP**. It ships in 5 small features:
+
+| # | Feature | Status | Where |
+|---|---|---|---|
+| 1.1 | Default gateway auto-suggest | ✅ Shipped | `backend/app/services/node_service.py:_default_gateway_for()` (line 95). The host's `DEFAULT_GATEWAY_IP` env var is set automatically from the peer router's interface IP. |
+| 1.2 | DHCP server on the router | 📋 Planned | — |
+| 1.3 | DHCP relay / IP helper | 📋 Planned | — |
+| 1.4 | DHCP reservations | 📋 Planned | — |
+| 1.10 | Duplicate-IP detection | 📋 Planned | — |
+
+### 1.1 — Default gateway auto-suggest (shipped)
+
+The user creates a host with one interface and one link to a router.
+They do **not** type a default gateway. The backend's
+`_default_gateway_for()` (in `node_service.py`) finds the peer
+router's interface IP and passes it to the container as
+`DEFAULT_GATEWAY_IP`. The entrypoint script
+(`infra/hosts/node_entrypoint.sh:88-124`) consumes that env var
+and runs `ip route replace default via <gw> dev <iface>`. The
+host's default route ends up pointing at the router, not at the
+Docker default-bridge gateway (which has no path to 10.0.x
+subnets).
+
+**Verified by:** `tests/manual/test_default_gateway_auto.py` —
+creates a 1-router + 1-host project, starts it, execs `ip route`
+inside the host container, asserts the default route points at
+the router's interface IP, and confirms the host can ping the
+router.
+
+The rest of M5-01 is in `phases/milestone-5/`. The full roadmap
+is in `ROADMAP.md`.
