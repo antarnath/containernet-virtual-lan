@@ -331,6 +331,18 @@ async def start_project(
                             node.name, iface.name, relay_result.error,
                         )
                 else:
+                    # M5-01 / 1.4 — collect this iface's DHCP
+                    # reservations (MAC → fixed IP) and pass them
+                    # to the agent. The agent writes one
+                    # ``dhcp-host=`` line per reservation.
+                    reservation_payloads = [
+                        {
+                            "mac_address": r.mac_address,
+                            "ip_address": r.ip_address,
+                            "hostname": r.hostname,
+                        }
+                        for r in (iface.reservations or [])
+                    ]
                     dhcp_result = await router_proxy.set_dhcp(
                         node.container_id,
                         interface=container_iface,
@@ -344,6 +356,7 @@ async def start_project(
                             if iface.ip_address and iface.subnet_mask
                             else None
                         ),
+                        reservations=reservation_payloads,
                     )
                     if not dhcp_result.ok:
                         log.warning(
@@ -546,12 +559,22 @@ async def project_state(
 async def _load_project(
     session: AsyncSession, project_id: str
 ) -> Project | None:
-    from app.models import ProjectCapture, ProjectLink
+    from app.models import (
+        ProjectCapture,
+        ProjectDHCPREServation,
+        ProjectInterface,
+        ProjectLink,
+    )
     stmt = (
         select(Project)
         .where(Project.id == project_id)
         .options(
-            selectinload(Project.nodes).selectinload(ProjectNode.interfaces),
+            # M5-01 / 1.4 — eager-load reservations via the
+            # iface relationship so the DHCP push can read
+            # ``iface.reservations`` without an N+1 round trip.
+            selectinload(Project.nodes)
+            .selectinload(ProjectNode.interfaces)
+            .selectinload(ProjectInterface.reservations),
             selectinload(Project.links).selectinload(ProjectLink.capture),
         )
     )

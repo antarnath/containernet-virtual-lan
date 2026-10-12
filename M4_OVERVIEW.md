@@ -641,7 +641,7 @@ add them as a "small extra."
 
 ---
 
-## 14. M5-01 — Automatic IP Management (in progress)
+## 14. M5-01 — Automatic IP Management
 
 M5-01 is the first post-M4 phase. Its goal is to **stop making the
 user type every IP**. It ships in 5 small features:
@@ -649,10 +649,10 @@ user type every IP**. It ships in 5 small features:
 | # | Feature | Status | Where |
 |---|---|---|---|
 | 1.1 | Default gateway auto-suggest | ✅ Shipped | `backend/app/services/node_service.py:_default_gateway_for()` (line 95). The host's `DEFAULT_GATEWAY_IP` env var is set automatically from the peer router's interface IP. |
-| 1.2 | DHCP server on the router | 📋 Planned | — |
-| 1.3 | DHCP relay / IP helper | 📋 Planned | — |
-| 1.4 | DHCP reservations | 📋 Planned | — |
-| 1.10 | Duplicate-IP detection | 📋 Planned | — |
+| 1.2 | DHCP server on the router | ✅ Shipped | `apk add dnsmasq` in `router-base.Dockerfile`; `dhcp_enabled` / `dhcp_pool_start` / `dhcp_pool_end` columns on `project_interfaces`; `POST /dhcp` and `GET /dhcp/leases` on the router agent; `udhcpc` in `infra/hosts/node_entrypoint.sh`. |
+| 1.3 | DHCP relay / IP helper | ✅ Shipped | `dnsmasq --dhcp-relay=<server_ip>` per interface. `dhcp_relay_enabled` + `dhcp_relay_server_ip` columns on `project_interfaces`. `udhcpc -B` (broadcast flag) in the entrypoint — without it, dnsmasq's relayed OFFER is unicasted to an IP the client doesn't have yet and gets ARP-blackholed. |
+| 1.4 | DHCP reservations | ✅ Shipped | New `project_dhcp_reservations` table. `GET` / `PUT` / `DELETE` endpoints under each router interface. `dhcp-host=MAC,IP[,hostname]` lines written into dnsmasq config. Ifaces get a deterministic locally-administered MAC at container attach time so reservations survive restarts. |
+| 1.10 | Duplicate-IP detection | ✅ Shipped | `project_service._check_duplicate_ips()` runs on every interface add / update. Rejects if any other interface in the same project (or a different project — depending on scope) shares the IP. |
 
 ### 1.1 — Default gateway auto-suggest (shipped)
 
@@ -672,6 +672,35 @@ creates a 1-router + 1-host project, starts it, execs `ip route`
 inside the host container, asserts the default route points at
 the router's interface IP, and confirms the host can ping the
 router.
+
+### 1.4 — DHCP reservations (shipped)
+
+A user pins a host's MAC to a fixed IP inside the router's DHCP
+pool. New `project_dhcp_reservations` table holds the rows with
+UNIQUE constraints on `(iface_id, mac_address)` and `(iface_id,
+ip_address)`. Three REST endpoints under each router interface:
+`GET /dhcp/reservations`, `PUT /dhcp/reservations` (replace
+semantics), `DELETE /dhcp/reservations/{id}`. The agent's
+`_write_dhcp_conf` emits `dhcp-host=MAC,IP[,hostname]` lines into
+the per-interface dnsmasq config.
+
+**MAC persistence** — Docker randomizes the veth MAC every time
+a container is recreated, which would invalidate reservations
+on every restart. The fix lives in `node_service.py`:
+`_deterministic_mac(iface_id)` derives a stable locally-
+administered MAC (first octet `02`) from the iface UUID via
+`md5(iface_id)`. The MAC is passed to docker-py's
+`net.connect(mac_address=…)` and persisted to
+`iface.mac_address` so the same MAC is used on every restart.
+
+**Verified by:** `tests/manual/test_dhcp_reservations.py` —
+1-router + 1-host topology. Sets a reservation, restarts the
+project (so the agent reloads dnsmasq config), then verifies:
+the dnsmasq config has the right `dhcp-host=` line, the host
+gets exactly the reserved IP from the pool, the `GET` / `PUT` /
+`DELETE` endpoints work, and validation rejects bad MACs, IPs
+outside the pool, reservations on non-router ifaces, and
+duplicate MACs/IPs within one request body.
 
 The rest of M5-01 is in `phases/milestone-5/`. The full roadmap
 is in `ROADMAP.md`.

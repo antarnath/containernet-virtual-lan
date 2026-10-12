@@ -29,6 +29,7 @@ from app.models.host import Base
 if TYPE_CHECKING:
     from app.models.project_node import ProjectNode
     from app.models.project_link import ProjectLink
+    from app.models.project_dhcp_reservation import ProjectDHCPREServation
 
 
 # ─── ip_address column type ────────────────────────────────────────────
@@ -148,6 +149,15 @@ class ProjectInterface(Base):
         "ProjectLink",
         foreign_keys="ProjectLink.iface_b_id",
         back_populates="iface_b",
+    )
+    # M5-01 / 1.4 — DHCP reservations (MAC → fixed IP bindings).
+    # Each iface with dhcp_enabled=True may have 0..N reservations.
+    # The relationship is the inverse of
+    # ProjectDHCPREServation.iface; deleting the iface cascades.
+    reservations: Mapped[list["ProjectDHCPREServation"]] = relationship(
+        "ProjectDHCPREServation",
+        back_populates="iface",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

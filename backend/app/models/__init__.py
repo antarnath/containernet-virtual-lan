@@ -24,6 +24,9 @@ from app.models.project_node import ProjectNode, NodeKind, ATTACK_MODES
 from app.models.project_interface import ProjectInterface
 from app.models.project_link import ProjectLink
 from app.models.project_capture import ProjectCapture
+# M5-01 / 1.4 — DHCP reservations (MAC → fixed IP bindings).
+# One row per binding on a DHCP-server router interface.
+from app.models.project_dhcp_reservation import ProjectDHCPREServation
 # M4 phase 03 — anomaly detector
 from app.models.anomaly_event import (
     AnomalyEvent,
@@ -54,6 +57,8 @@ __all__ = [
     "ProjectInterface",
     "ProjectLink",
     "ProjectCapture",
+    # M5-01 / 1.4
+    "ProjectDHCPREServation",
     # M4 phase 03
     "AnomalyEvent", "AnomalyKind", "AnomalySeverity",
     # M4 phase 05

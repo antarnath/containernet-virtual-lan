@@ -132,6 +132,48 @@ _PATCHES: list[tuple[str, str]] = [
         "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_relay_server INET",
         "M5-01/1.3: add project_interfaces.dhcp_relay_server",
     ),
+    # ─── M5-01 / 1.4: DHCP reservations table.
+    # One row per (iface, MAC, IP) binding. The table is created
+    # by `Base.metadata.create_all` on startup; these statements
+    # add the two UNIQUE constraints idempotently so they show up
+    # on existing deployments that already had a reservation row
+    # but without the constraints (e.g. an early internal release).
+    (
+        "CREATE TABLE IF NOT EXISTS project_dhcp_reservations ("
+        "id VARCHAR(36) PRIMARY KEY, "
+        "iface_id VARCHAR(36) NOT NULL REFERENCES project_interfaces(id) "
+        "ON DELETE CASCADE, "
+        "mac_address VARCHAR(17) NOT NULL, "
+        "ip_address INET NOT NULL, "
+        "hostname VARCHAR(63), "
+        "created_at TIMESTAMP WITH TIME ZONE DEFAULT now(), "
+        "updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()"
+        ")",
+        "M5-01/1.4: create project_dhcp_reservations table",
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS ix_project_dhcp_reservations_iface_id "
+        "ON project_dhcp_reservations (iface_id)",
+        "M5-01/1.4: index project_dhcp_reservations.iface_id",
+    ),
+    (
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conname = 'uq_reservation_iface_mac') THEN "
+        "ALTER TABLE project_dhcp_reservations "
+        "ADD CONSTRAINT uq_reservation_iface_mac UNIQUE (iface_id, mac_address); "
+        "END IF; END $$",
+        "M5-01/1.4: add uq_reservation_iface_mac constraint",
+    ),
+    (
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conname = 'uq_reservation_iface_ip') THEN "
+        "ALTER TABLE project_dhcp_reservations "
+        "ADD CONSTRAINT uq_reservation_iface_ip UNIQUE (iface_id, ip_address); "
+        "END IF; END $$",
+        "M5-01/1.4: add uq_reservation_iface_ip constraint",
+    ),
 ]
 
 

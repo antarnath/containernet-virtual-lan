@@ -302,6 +302,7 @@ async def set_dhcp(
     lease_time: int = 43200,
     dns: str | None = None,
     expected_cidr: str | None = None,
+    reservations: list[dict] | None = None,
 ) -> DHCPConfigResult:
     """Push a DHCP server config to a router via ``PUT /dhcp``.
 
@@ -311,6 +312,11 @@ async def set_dhcp(
     entrypoint runs node_entrypoint.sh first, which has its own
     sleep + tcpdump + agent startup, so the HTTP server can take
     a few seconds to bind.
+
+    M5-01 / 1.4 — ``reservations`` is a list of dicts with
+    ``mac_address``, ``ip_address``, and optional ``hostname``
+    fields. The router agent writes one ``dhcp-host=`` line per
+    entry into /etc/dnsmasq.d/<iface>.conf.
     """
     if not container_id:
         return DHCPConfigResult(ok=False, error="no container_id")
@@ -348,6 +354,10 @@ async def set_dhcp(
         "lease_time": lease_time,
         "dns": dns,
         "expected_cidr": expected_cidr,
+        # M5-01 / 1.4 — list of {mac_address, ip_address,
+        # hostname?} dicts. The agent writes one dhcp-host= line
+        # per entry. Empty list = no reservations.
+        "reservations": reservations or [],
     }).encode("utf-8")
     last: DHCPConfigResult | None = None
     for attempt in range(15):

@@ -39,6 +39,7 @@ capture is the only reliable way to get the full wire view.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
 from dataclasses import dataclass
@@ -252,6 +253,19 @@ def _dhcp_ifaces_for_node(
             out.append(f"eth{eth_index}")
         eth_index += 1
     return out
+
+
+def _deterministic_mac(iface_id: str) -> str:
+    """Derive a stable locally-administered MAC from the iface UUID.
+
+    M5-01 / 1.4 — DHCP reservations need a stable MAC across
+    container restarts (Docker randomizes the veth MAC every time
+    a container is recreated, so we can't rely on it). The first
+    octet is set to 02 (locally administered, unicast) so we
+    don't collide with vendor-assigned OUIs.
+    """
+    h = hashlib.md5(iface_id.encode()).digest()
+    return f"02:{h[0]:02x}:{h[1]:02x}:{h[2]:02x}:{h[3]:02x}:{h[4]:02x}"
 
 
 # Command per kind. M4 phase 04 wraps every kind's command with the
@@ -818,12 +832,23 @@ def _reattach_to_bridges(
             # edited an interface IP after the bridge was created).
             pinned = None
 
+        # M5-01 / 1.4 — DHCP reservations need a stable MAC across
+        # container restarts. Docker randomizes the veth MAC on
+        # every container create, so we compute a deterministic
+        # locally-administered MAC from the iface UUID and pin it
+        # via docker-py's ``mac_address=`` argument. We persist
+        # the value to ``iface.mac_address`` so it can be read back
+        # by the test / reservation UI without re-deriving.
+        iface_mac = my_iface.mac_address or _deterministic_mac(my_iface.id)
+        if not my_iface.mac_address:
+            my_iface.mac_address = iface_mac
+
         try:
             net = client.networks.get(bridge.network_id)
             if pinned:
-                net.connect(container, ipv4_address=pinned)
+                net.connect(container, ipv4_address=pinned, mac_address=iface_mac)
             else:
-                net.connect(container)
+                net.connect(container, mac_address=iface_mac)
             attached.append(bridge.network_id)
         except APIError as exc:
             if "already connected" in str(exc).lower():

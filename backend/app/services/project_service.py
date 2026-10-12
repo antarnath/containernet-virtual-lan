@@ -45,6 +45,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.schemas.project import (
+    DHCPReservationIn,
     InterfaceDHCPConfigIn,
     InterfaceDHCPRelayConfigIn,
     ProjectCreateIn,
@@ -739,6 +740,204 @@ async def set_dhcp_relay_config(
     await session.commit()
     await session.refresh(iface)
     return iface
+
+
+# ─── M5-01 / 1.4 — DHCP reservations (MAC → IP bindings) ────────────
+
+async def list_dhcp_reservations(
+    session: AsyncSession,
+    project_id: str,
+    iface_id: str,
+) -> list["ProjectDHCPREServation"]:
+    """Return all reservations on a router interface.
+
+    M5-01 feature 1.4. The list is unordered (the UI can sort); the
+    service doesn't care about order since dnsmasq reads lines
+    independently and a row's identity is its (iface, MAC, IP).
+    """
+    from app.models import ProjectDHCPREServation
+    # Scope-check: the iface must exist in this project. We do
+    # this in two steps (count via the join, then list) so the
+    # API can return 404 vs 200-empty without a second query.
+    iface = await _get_iface_in_project(session, project_id, iface_id)
+    if iface is None:
+        raise InterfaceNotFoundError(iface_id)
+    stmt = (
+        select(ProjectDHCPREServation)
+        .where(ProjectDHCPREServation.iface_id == iface_id)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def set_dhcp_reservations(
+    session: AsyncSession,
+    project_id: str,
+    iface_id: str,
+    body: list["DHCPReservationIn"],
+) -> list["ProjectDHCPREServation"]:
+    """Replace the full reservation list on an iface.
+
+    M5-01 feature 1.4. The semantics are "send the desired end-state":
+    the rows are deleted and re-inserted in a single transaction.
+    This is simpler than diff/merge and the cardinality is small
+    (a few rows per iface in practice), so the cost is negligible.
+
+    Validation (each is a 422):
+      * iface exists, is on a router, in this project
+      * if dhcp_enabled=True, every reservation's IP is inside
+        the configured pool
+      * no duplicate MACs or IPs within the body
+      * the iface's pool/lease is set if dhcp_enabled=True (a
+        reservation without a pool to live in is meaningless)
+    """
+    from app.models import ProjectDHCPREServation
+    iface = await _get_iface_in_project(session, project_id, iface_id, with_node=True)
+    if iface is None:
+        raise InterfaceNotFoundError(iface_id)
+    if iface.node.kind != "router":
+        raise DHCPConfigError(
+            f"DHCP reservations can only be set on router interfaces; "
+            f"this interface is on a {iface.node.kind!r} node."
+        )
+
+    # Validate the body before touching the DB.
+    seen_macs: set[str] = set()
+    seen_ips: set[str] = set()
+    for r in body:
+        if r.mac_address in seen_macs:
+            raise DHCPConfigError(
+                f"duplicate mac_address in body: {r.mac_address!r}"
+            )
+        seen_macs.add(r.mac_address)
+        if r.ip_address in seen_ips:
+            raise DHCPConfigError(
+                f"duplicate ip_address in body: {r.ip_address!r}"
+            )
+        seen_ips.add(r.ip_address)
+
+    # If the iface has a running server, the IP must be inside the
+    # pool — otherwise the dnsmasq ``dhcp-host=MAC,IP`` line will
+    # hand out an IP outside the pool, which contradicts the pool
+    # in the conf and confuses the DHCP client.
+    if getattr(iface, "dhcp_enabled", False):
+        if not iface.dhcp_pool_start or not iface.dhcp_pool_end:
+            raise DHCPConfigError(
+                "Cannot set reservations: DHCP server is enabled on this "
+                "interface but the pool is not configured."
+            )
+        try:
+            pool_start = ipaddress.IPv4Address(iface.dhcp_pool_start)
+            pool_end = ipaddress.IPv4Address(iface.dhcp_pool_end)
+        except (ipaddress.AddressValueError, ValueError) as exc:
+            # Should not happen — pool is validated at save time —
+            # but we double-check so a corrupt row doesn't slip
+            # through.
+            raise DHCPConfigError(
+                f"iface has a malformed DHCP pool: {exc}"
+            )
+        for r in body:
+            try:
+                ip = ipaddress.IPv4Address(r.ip_address)
+            except ValueError as exc:
+                raise DHCPConfigError(
+                    f"reservation IP {r.ip_address!r} is not a valid IPv4: {exc}"
+                )
+            if not (pool_start <= ip <= pool_end):
+                raise DHCPConfigError(
+                    f"reservation IP {r.ip_address!r} is outside the "
+                    f"DHCP pool {pool_start}-{pool_end}."
+                )
+
+    # Replace the rows in one transaction. We delete first, then
+    # insert, so a UNIQUE constraint that would conflict with an
+    # existing row (in either direction) is handled by the delete.
+    from app.models import ProjectDHCPREServation as PDR
+    existing_stmt = select(PDR).where(PDR.iface_id == iface_id)
+    existing_result = await session.execute(existing_stmt)
+    for row in list(existing_result.scalars().all()):
+        await session.delete(row)
+    await session.flush()
+
+    for r in body:
+        new_row = PDR(
+            iface_id=iface_id,
+            mac_address=r.mac_address,
+            ip_address=r.ip_address,
+            hostname=r.hostname,
+        )
+        session.add(new_row)
+    await session.commit()
+
+    # Re-fetch for the response (refresh sees the new IDs + timestamps).
+    fresh_stmt = (
+        select(PDR)
+        .where(PDR.iface_id == iface_id)
+    )
+    fresh_result = await session.execute(fresh_stmt)
+    return list(fresh_result.scalars().all())
+
+
+async def delete_dhcp_reservation(
+    session: AsyncSession,
+    project_id: str,
+    reservation_id: str,
+) -> bool:
+    """Delete a single reservation. Returns True if a row was removed.
+
+    M5-01 feature 1.4. We scope-check the project by walking the
+    reservation's iface → node → project; if any link in the
+    chain is missing, we treat the row as already-gone and return
+    False (the API converts that to 204 anyway via the project
+    pre-check).
+    """
+    from app.models import ProjectDHCPREServation
+    stmt = select(ProjectDHCPREServation).where(
+        ProjectDHCPREServation.id == reservation_id
+    )
+    result = await session.execute(stmt)
+    row = result.scalars().first()
+    if row is None:
+        return False
+    # Walk iface → node → project to make sure the user isn't
+    # deleting a reservation from a different project (URL is
+    # project-scoped, but the row id is globally unique).
+    iface = await _get_iface_in_project(session, project_id, row.iface_id)
+    if iface is None:
+        return False
+    await session.delete(row)
+    await session.commit()
+    return True
+
+
+async def _get_iface_in_project(
+    session: AsyncSession,
+    project_id: str,
+    iface_id: str,
+    *,
+    with_node: bool = False,
+):
+    """Lookup helper used by the reservation endpoints. Returns the
+    ProjectInterface row, or None if not found in this project.
+
+    With ``with_node=True`` (e.g. for type-checking the kind) the
+    node relationship is eager-loaded so callers can read
+    ``iface.node.kind`` without an extra round-trip.
+    """
+    from app.models import ProjectInterface
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id == iface_id,
+            ProjectNode.project_id == project_id,
+        )
+    )
+    if with_node:
+        stmt = stmt.options(selectinload(ProjectInterface.node))
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
 
 async def add_interface(
     session: AsyncSession,

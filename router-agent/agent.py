@@ -270,11 +270,20 @@ def _write_dhcp_conf(
     pool_end: str,
     lease_time: int,
     dns: str | None,
+    reservations: list[dict] | None = None,
 ) -> tuple[bool, str]:
     """Write /etc/dnsmasq.d/<iface>.conf with the DHCP range.
 
     ``lease_time`` is in seconds. ``dns`` is a comma-separated list
     of IPv4 servers (the dnsmasq option takes the same form).
+
+    M5-01 / 1.4 — ``reservations`` is a list of dicts with
+    ``mac_address`` (lowercase, colon-separated), ``ip_address``,
+    and optional ``hostname`` fields. Each becomes a
+    ``dhcp-host=MAC,IP[,hostname]`` line. The backend validates
+    that the IP is inside the pool, so we don't double-check
+    here — the dnsmasq line itself is harmless if the IP is
+    outside (the host just gets an IP nobody can route to).
     """
     if not iface or "/" in iface or iface.startswith("."):
         return False, f"invalid interface name: {iface!r}"
@@ -288,6 +297,29 @@ def _write_dhcp_conf(
     if dns:
         # dhcp-option=6,<ip>[,<ip>...]
         lines.append(f"dhcp-option=6,{dns}")
+    # M5-01 / 1.4 — DHCP reservations (MAC → fixed IP).
+    # One ``dhcp-host=`` line per binding. dnsmasq matches on
+    # MAC, hands out the configured IP, and (if the third
+    # field is a hostname) also registers a local-DNS entry.
+    for r in reservations or []:
+        mac = (r.get("mac_address") or "").strip()
+        ip = (r.get("ip_address") or "").strip()
+        if not mac or not ip:
+            # Defensive: skip malformed entries rather than
+            # blowing up the whole conf — the backend should
+            # have caught these at validation time, but a
+            # partial write from an older client shouldn't
+            # take the iface down.
+            continue
+        host = (r.get("hostname") or "").strip()
+        if host:
+            # dhsmasq rejects whitespace in hostnames; the
+            # backend's regex already enforces this, but
+            # defend again in case a future caller forgets.
+            host = host.split()[0]
+            lines.append(f"dhcp-host={mac},{ip},{host}")
+        else:
+            lines.append(f"dhcp-host={mac},{ip}")
     try:
         os.makedirs(DNSMASQ_CONF_DIR, exist_ok=True)
         with open(path, "w") as f:
@@ -547,7 +579,14 @@ class RouterHandler(BaseHTTPRequestHandler):
             if not ok:
                 self._send_json({"ok": False, "error": msg}, 500)
                 return
-            ok, msg = _write_dhcp_conf(iface, pool_start, pool_end, lease_time, dns)
+            ok, msg = _write_dhcp_conf(
+                iface, pool_start, pool_end, lease_time, dns,
+                # M5-01 / 1.4 — list of {mac_address, ip_address,
+                # hostname?} dicts. The conf writer turns each
+                # into a ``dhcp-host=`` line. Empty list means
+                # no static bindings.
+                reservations=body.get("reservations") or [],
+            )
             if not ok:
                 self._send_json({"ok": False, "error": msg}, 500)
                 return

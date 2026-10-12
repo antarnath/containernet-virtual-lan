@@ -17,6 +17,7 @@ a bridge (i.e. share a link).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from ipaddress import IPv4Address
 from typing import Literal
@@ -242,6 +243,104 @@ class InterfaceDHCPRelayConfigIn(BaseModel):
         except ValueError as exc:
             raise ValueError(f"must be a valid IPv4: {exc}")
         return v
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  M5-01 / 1.4 — DHCP reservations (MAC → fixed IP bindings)
+# ═══════════════════════════════════════════════════════════════════════
+
+# 12 hex + 5 colons, e.g. "aa:bb:cc:dd:ee:ff". Case-insensitive;
+# we normalise to lowercase before storing.
+_MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+
+
+def _normalise_mac(value: str) -> str:
+    """Lowercase + validate a MAC string. Raises ValueError on bad input."""
+    if not isinstance(value, str):
+        raise ValueError("mac_address must be a string")
+    v = value.strip().lower()
+    if not _MAC_RE.match(v):
+        raise ValueError(
+            f"mac_address must look like 'aa:bb:cc:dd:ee:ff' (got {value!r})"
+        )
+    return v
+
+
+class DHCPReservationIn(BaseModel):
+    """A single MAC → IP binding for a DHCP-server router interface.
+
+    The IP must lie inside the iface's DHCP pool (validated in the
+    service layer — pool membership needs a DB read, not just the
+    request body). The MAC is normalised to lowercase on the way in
+    so the UNIQUE constraint on (iface_id, mac_address) doesn't
+    reject "AA:BB:..." and "aa:bb:..." as different rows.
+
+    The hostname is optional; when present, dnsmasq binds it as
+    the local-DNS name for the client. 63 chars is the DNS label
+    max (RFC 1035); dnsmasq will reject longer anyway.
+    """
+    mac_address: str
+    ip_address: str
+    hostname: str | None = None
+
+    @field_validator("mac_address")
+    @classmethod
+    def _valid_mac(cls, v: str) -> str:
+        return _normalise_mac(v)
+
+    @field_validator("ip_address")
+    @classmethod
+    def _valid_ip(cls, v: str) -> str:
+        try:
+            IPv4Address(v)
+        except ValueError as exc:
+            raise ValueError(f"must be a valid IPv4: {exc}")
+        return v
+
+    @field_validator("hostname")
+    @classmethod
+    def _valid_hostname(cls, v: str | None) -> str | None:
+        if v is None or v.strip() == "":
+            return None
+        v = v.strip()
+        if len(v) > 63:
+            raise ValueError("hostname must be ≤ 63 characters (DNS label max)")
+        # dnsmasq's regex is slightly looser but a basic sanity check
+        # is enough; the alternative (full RFC 1123) is over-engineered
+        # for a "type a friendly name" form.
+        if not re.match(r"^[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?$", v):
+            raise ValueError(
+                "hostname must be alphanumeric (hyphens allowed in the middle)"
+            )
+        return v
+
+
+class DHCPReservationsIn(BaseModel):
+    """Body for PUT /api/projects/<pid>/nodes/<nid>/interfaces/<iid>/dhcp/reservations.
+
+    Replaces the full reservation list (the API is idempotent — send
+    the desired end-state, not a delta). An empty list disables all
+    reservations. The service layer additionally rejects duplicate
+    MACs or IPs inside the same list (those should be a single row).
+    """
+    reservations: list[DHCPReservationIn] = Field(default_factory=list)
+
+
+class DHCPReservationOut(BaseModel):
+    id: str
+    iface_id: str
+    mac_address: str
+    ip_address: str
+    hostname: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DHCPReservationsOut(BaseModel):
+    reservations: list[DHCPReservationOut] = Field(default_factory=list)
 
 
 # ═══════════════════════════════════════════════════════════════════════

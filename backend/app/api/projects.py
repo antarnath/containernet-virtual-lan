@@ -51,6 +51,9 @@ from app.services import (
 
 log = logging.getLogger(__name__)
 from app.schemas.project import (
+    DHCPReservationOut,
+    DHCPReservationsIn,
+    DHCPReservationsOut,
     InterfaceDHCPConfigIn,
     InterfaceDHCPRelayConfigIn,
     ProjectCreateIn,
@@ -579,6 +582,101 @@ async def set_interface_dhcp_relay(
     if iface is None:
         raise HTTPException(status_code=404, detail="interface not found")
     return _iface_out(iface)
+
+
+# ─── DHCP reservations endpoints (M5-01 / 1.4) ────────────────────────
+
+@router.get(
+    "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp/reservations",
+    response_model=DHCPReservationsOut,
+)
+async def list_interface_dhcp_reservations(
+    project_id: str,
+    node_id: str,  # noqa: ARG001 (URL symmetry)
+    iface_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """List the DHCP reservations on a router interface.
+
+    M5-01 feature 1.4. Returns an empty list if the iface has no
+    server running — the reservations only matter when
+    ``dhcp_enabled=True``, but the rows can be saved up-front and
+    handed to dnsmasq when the server flips on (the lifecycle
+    path always sends the full list, regardless of state).
+    """
+    reservations = await project_service.list_dhcp_reservations(
+        session, project_id, iface_id
+    )
+    return DHCPReservationsOut(
+        reservations=[DHCPReservationOut.model_validate(r) for r in reservations]
+    )
+
+
+@router.put(
+    "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp/reservations",
+    response_model=DHCPReservationsOut,
+)
+async def set_interface_dhcp_reservations(
+    project_id: str,
+    node_id: str,  # noqa: ARG001 (URL symmetry)
+    iface_id: str,
+    body: DHCPReservationsIn,
+    session: AsyncSession = Depends(get_session),
+):
+    """Replace the full DHCP reservation list on a router interface.
+
+    M5-01 feature 1.4. Validation:
+      * iface belongs to a router in this project
+      * if the iface has ``dhcp_enabled=True``, every reservation's
+        IP must lie inside the configured pool (so the dnsmasq
+        ``dhcp-host=MAC,IP`` line makes sense for the pool)
+      * no duplicate MACs / IPs within the request body
+
+    The actual ``dhcp-host=`` lines are written when the project
+    starts (or restarts); see ``project_lifecycle._push_dhcp``.
+    """
+    try:
+        reservations = await project_service.set_dhcp_reservations(
+            session, project_id, iface_id, body.reservations
+        )
+    except project_service.DHCPConfigError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_dhcp_reservation",
+                "message": str(exc),
+            },
+        )
+    return DHCPReservationsOut(
+        reservations=[DHCPReservationOut.model_validate(r) for r in reservations]
+    )
+
+
+@router.delete(
+    "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp/reservations/{reservation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_interface_dhcp_reservation(
+    project_id: str,
+    node_id: str,  # noqa: ARG001 (URL symmetry)
+    iface_id: str,  # noqa: ARG001 (URL symmetry)
+    reservation_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a single DHCP reservation. Idempotent — 204 whether or
+    not the row existed."""
+    from sqlalchemy import select
+    from app.models import Project
+    # Distinguish "project not found" (404) from "reservation not
+    # found" (204 — idempotent delete).
+    p_stmt = select(Project).where(Project.id == project_id)
+    p_result = await session.execute(p_stmt)
+    if p_result.scalars().first() is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    await project_service.delete_dhcp_reservation(
+        session, project_id, reservation_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ─── Link endpoints ───────────────────────────────────────────────────────
