@@ -250,7 +250,13 @@ async def set_route(
         # Only retry on connection-level errors, not on the agent
         # explicitly returning ok=False (those won't fix themselves).
         err = (result.error or "").lower()
-        if "refused" not in err and "timeout" not in err and "reset" not in err:
+        if (
+            "refused" not in err
+            and "timeout" not in err
+            and "reset" not in err
+            and "no route" not in err
+            and "unreachable" not in err
+        ):
             return result
         await asyncio.sleep(0.3)
     return last or RouteInstallResult(ok=False, error="unknown")
@@ -276,6 +282,152 @@ def _post_json(url: str, body: bytes) -> RouteInstallResult:
     if parsed.get("ok"):
         return RouteInstallResult(ok=True, route=parsed.get("route"))
     return RouteInstallResult(ok=False, error=parsed.get("error", "unknown error"))
+
+
+# ─── M5-01 / 1.2 — DHCP config (write side) ────────────────────────────
+
+@dataclass
+class DHCPConfigResult:
+    ok: bool
+    error: str | None = None
+
+
+async def set_dhcp(
+    container_id: str | None,
+    *,
+    interface: str,
+    enabled: bool,
+    pool_start: str | None = None,
+    pool_end: str | None = None,
+    lease_time: int = 43200,
+    dns: str | None = None,
+    expected_cidr: str | None = None,
+) -> DHCPConfigResult:
+    """Push a DHCP server config to a router via ``PUT /dhcp``.
+
+    Same retry-on-connection-refused pattern as ``set_route`` —
+    the agent may not be bound yet right after ``containers.run``.
+    We give the agent up to ~10s to come up; the router agent's
+    entrypoint runs node_entrypoint.sh first, which has its own
+    sleep + tcpdump + agent startup, so the HTTP server can take
+    a few seconds to bind.
+    """
+    if not container_id:
+        return DHCPConfigResult(ok=False, error="no container_id")
+    # Wait a beat before the first attempt — when a router container
+    # is freshly spawned, Docker's iptables rules for the new
+    # container's INPUT chain can take a moment to settle. Calling
+    # the agent immediately often gets "Connection refused" or
+    # "No route to host" for the first 1-2 seconds.
+    await asyncio.sleep(2.0)
+    # M5-01 / 1.2 — fix Docker bridge ARP/iptables race. A freshly
+    # attached container's MAC shows up as INCOMPLETE in the
+    # backend's ARP cache AND the bridge's iptables MASQUERADE
+    # rule for the new endpoint isn't built. Symptom: every
+    # ``socket.create_connection`` to the agent's IP hangs even
+    # though the agent is up. We bounce the network attachment
+    # via the ``docker`` CLI (synchronous; the docker daemon
+    # actually waits for iptables to be applied before returning,
+    # unlike docker-py's ``net.connect``). This is a known
+    # Docker bug; see commit message for the reproducer.
+    await asyncio.to_thread(ensure_agent_reachable, container_id)
+    url = agent_url(container_id, "/dhcp")
+    if not url:
+        for _ in range(15):
+            await asyncio.sleep(0.5)
+            url = agent_url(container_id, "/dhcp")
+            if url:
+                break
+    if not url:
+        return DHCPConfigResult(ok=False, error="agent unreachable (no url)")
+    body = json.dumps({
+        "interface": interface,
+        "enabled": enabled,
+        "pool_start": pool_start,
+        "pool_end": pool_end,
+        "lease_time": lease_time,
+        "dns": dns,
+        "expected_cidr": expected_cidr,
+    }).encode("utf-8")
+    last: DHCPConfigResult | None = None
+    for attempt in range(15):
+        result = await asyncio.to_thread(_put_json, url, body)
+        if result.ok:
+            print(f"[router_proxy] set_dhcp {url} attempt {attempt}: OK", flush=True)
+            return result
+        last = result
+        print(
+            f"[router_proxy] set_dhcp {url} attempt {attempt}: {result.error}",
+            flush=True,
+        )
+        err = (result.error or "").lower()
+        if (
+            "refused" not in err
+            and "timeout" not in err
+            and "reset" not in err
+            and "no route" not in err
+            and "unreachable" not in err
+        ):
+            return result
+        await asyncio.sleep(0.5)
+    return last or DHCPConfigResult(ok=False, error="unknown")
+
+
+def _put_json(url: str, body: bytes) -> DHCPConfigResult:
+    """Blocking PUT. Runs inside ``asyncio.to_thread``."""
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    # M5-01 / 1.2 — DHCP push gets a longer timeout than the
+    # polling-style GETs. The agent's do_PUT is fast (it just
+    # writes a file and starts dnsmasq), but the first call after
+    # a fresh spawn can stall on Docker's iptables rebuild.
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            payload = resp.read().decode("utf-8", errors="replace") or "{}"
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return DHCPConfigResult(ok=False, error=str(exc))
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        parsed = {}
+    if parsed.get("ok"):
+        return DHCPConfigResult(ok=True)
+    return DHCPConfigResult(ok=False, error=parsed.get("error", "unknown error"))
+
+
+@dataclass
+class DHCPLeasesResult:
+    leases: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+
+async def get_dhcp_leases(container_id: str | None) -> DHCPLeasesResult:
+    """Fetch the current DHCP leases from a router via ``GET /dhcp/leases``.
+
+    The router agent reads ``/var/lib/misc/dnsmasq.leases`` on every
+    call (no caching on the agent side). Returns an empty list with
+    ``error`` set if the agent is unreachable.
+    """
+    if not container_id:
+        return DHCPLeasesResult(error="no container_id")
+    url = agent_url(container_id, "/dhcp/leases")
+    if not url:
+        return DHCPLeasesResult(error="agent unreachable")
+    try:
+        text = await asyncio.to_thread(_http_get_text, url)
+    except Exception as exc:
+        return DHCPLeasesResult(error=str(exc))
+    if text is None:
+        return DHCPLeasesResult(error="agent unreachable")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return DHCPLeasesResult(error="bad JSON from agent")
+    return DHCPLeasesResult(leases=parsed.get("leases") or [])
 
 
 # ─── HTTP fetch + parse ───────────────────────────────────────────────
@@ -319,6 +471,93 @@ def agent_url(container_id: str, path: str = "") -> str | None:
         if ip:
             return f"http://{ip}:9090{path}"
     return None
+
+
+def ensure_agent_reachable(container_id: str) -> None:
+    """Make sure the router's :9090 agent is reachable from the backend.
+
+    Combines two fixes for the Docker bridge networking race:
+
+      1. **iptables MASQUERADE rebuild** — when a container is
+         attached to a bridge via ``net.connect``, the bridge's
+         iptables MASQUERADE rule for the new endpoint is sometimes
+         not built until the endpoint is re-attached. Symptom:
+         cross-bridge connections hang or get "No route to host"
+         even though the agent is listening. Bouncing
+         (disconnect → connect) refreshes the rule.
+
+      2. **Agent startup wait** — the router's node_entrypoint.sh
+         has a 2s sleep + interface-wait loop + tcpdump setup
+         before it execs the agent. The agent's HTTP server can
+         take 3-5s to bind. We poll the health endpoint until
+         either it responds or we give up.
+
+    This function is called from ``set_dhcp`` and ``set_route``
+    right after node spawn. It is idempotent and a no-op when the
+    agent is already reachable.
+    """
+    from app.core.config import settings
+    from docker.errors import APIError
+    client = get_docker_client()
+    net_name = settings.BACKEND_NETWORK
+    # 1) Wait for the agent to start. We do this BEFORE the
+    # bounce, because if the agent isn't up we can't tell
+    # "iptables is broken" from "agent hasn't started yet" and
+    # we'd do an unnecessary bounce.
+    deadline = time.monotonic() + 20.0  # up to 20s for the agent
+    url = None
+    while time.monotonic() < deadline:
+        url = agent_url(container_id, "/healthz")
+        if url:
+            try:
+                with urllib.request.urlopen(url, timeout=1.5) as resp:
+                    if resp.status == 200:
+                        return  # already reachable
+            except (urllib.error.URLError, OSError, TimeoutError):
+                pass
+        time.sleep(0.5)
+    # 2) Agent still isn't up after 20s. Bounce the network
+    # attach and try once more. The bounce fixes the
+    # iptables-MASQUERADE-missing bug; the agent itself
+    # genuinely is up (we'd have seen it via the port in
+    # the container) — the issue is purely the bridge.
+    print(
+        f"[router_proxy] {container_id[:12]} not reachable after 20s; "
+        f"bouncing backend network attach",
+        flush=True,
+    )
+    try:
+        c = client.containers.get(container_id)
+        net = client.networks.get(net_name)
+        try:
+            net.disconnect(c)
+        except APIError:
+            pass
+        time.sleep(1.0)
+        c.reload()
+        try:
+            net.connect(c)
+        except APIError:
+            pass
+        time.sleep(0.5)
+        # 3) One more round of health-check waits.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            url = agent_url(container_id, "/healthz")
+            if url:
+                try:
+                    with urllib.request.urlopen(url, timeout=1.5) as resp:
+                        if resp.status == 200:
+                            return
+                except (urllib.error.URLError, OSError, TimeoutError):
+                    pass
+            time.sleep(0.5)
+    except Exception as exc:
+        print(
+            f"[router_proxy] ensure_agent_reachable error: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
 
 def _agent_url(container_id: str, path: str) -> str | None:

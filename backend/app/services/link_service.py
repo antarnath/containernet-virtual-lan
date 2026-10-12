@@ -371,12 +371,40 @@ def _derive_subnet(
             return str(network), gateway
         except (ipaddress.AddressValueError, ValueError):
             pass
-    # Deterministic fallback so two links don't share a subnet. A
-    # /30 has only two usable hosts; no room for a third gateway IP.
+    # Single-endpoint case: use whichever side has IP+mask. The
+    # DHCP-client host (the side without an IP) will get a lease in
+    # this same subnet, so the link's ``subnet_cidr`` is well-defined
+    # and the DHCP pool validator can check that the pool lies
+    # inside it.
+    for ip, mask in (
+        (iface_a_ip, a_mask),
+        (iface_b_ip, b_mask),
+    ):
+        if ip and mask is not None:
+            try:
+                addr = ipaddress.IPv4Address(ip)
+                network = ipaddress.IPv4Network(
+                    f"{addr}/{mask}", strict=False
+                )
+                hosts = list(network.hosts())
+                if hosts:
+                    gateway = str(hosts[-1])
+                else:
+                    gateway = None
+                return str(network), gateway
+            except (ipaddress.AddressValueError, ValueError):
+                pass
+    # Deterministic fallback so two links don't share a subnet. We
+    # use a /24 in 10.250.0.0/16 — the third octet is derived from
+    # the link id (Docker rejects unaligned subnets as "invalid
+    # subnet"). /24 gives plenty of room for two endpoints, the
+    # bridge gateway, and a DHCP pool.
     h = _short_id(link_id, 4)
     hi = int(h[:2], 16) if h[:2] else 0
     lo = int(h[2:4], 16) if len(h) >= 4 else 0
-    return f"10.250.{hi % 256}.{lo % 256}/30", None
+    third = hi % 256
+    fourth = 0  # /24 alignment — the network address is .third.0
+    return f"10.250.{third}.{fourth}/24", None
 
 
 def get_bridge_for_link_id(link_id: str) -> dict[str, Any] | None:

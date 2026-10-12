@@ -51,6 +51,7 @@ from app.services import (
 
 log = logging.getLogger(__name__)
 from app.schemas.project import (
+    InterfaceDHCPConfigIn,
     ProjectCreateIn,
     ProjectDetailOut,
     ProjectInterfaceCreateIn,
@@ -115,6 +116,12 @@ def _iface_out(i) -> ProjectInterfaceOut:
     ip = i.ip_address
     if ip is not None and not isinstance(ip, str):
         ip = str(ip)
+    pool_start = i.dhcp_pool_start
+    if pool_start is not None and not isinstance(pool_start, str):
+        pool_start = str(pool_start)
+    pool_end = i.dhcp_pool_end
+    if pool_end is not None and not isinstance(pool_end, str):
+        pool_end = str(pool_end)
     return ProjectInterfaceOut(
         id=i.id,
         node_id=i.node_id,
@@ -122,6 +129,11 @@ def _iface_out(i) -> ProjectInterfaceOut:
         ip_address=ip,
         subnet_mask=i.subnet_mask,
         mac_address=i.mac_address,
+        dhcp_enabled=bool(i.dhcp_enabled),
+        dhcp_pool_start=pool_start,
+        dhcp_pool_end=pool_end,
+        dhcp_lease_time=int(i.dhcp_lease_time or 0),
+        dhcp_dns=i.dhcp_dns,
         created_at=i.created_at,
         updated_at=i.updated_at,
     )
@@ -456,6 +468,71 @@ async def delete_interface(
     if not deleted:
         raise HTTPException(status_code=404, detail="interface not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ─── DHCP endpoints (M5-01 / 1.2) ──────────────────────────────────────────
+
+@router.put(
+    "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp",
+    response_model=ProjectInterfaceOut,
+)
+async def set_interface_dhcp(
+    project_id: str,
+    node_id: str,  # noqa: ARG001 (path param, kept for URL symmetry)
+    iface_id: str,
+    body: InterfaceDHCPConfigIn,
+    session: AsyncSession = Depends(get_session),
+):
+    """Configure the DHCP server on a router interface.
+
+    M5-01 feature 1.2. The router agent's ``PUT /dhcp`` endpoint
+    (called by the backend at start time) is what actually starts
+    ``dnsmasq``; this endpoint just persists the user's intent.
+    Validation: pool must lie inside the bridge subnet, and the
+    router's own IP must not be in the pool. On failure, returns
+    422 with the list of violations.
+    """
+    try:
+        iface = await project_service.set_dhcp_config(
+            session, project_id, iface_id, body
+        )
+    except project_service.DHCPConfigError as exc:
+        # 422 = Unprocessable Entity — the request was syntactically
+        # valid but semantically wrong (pool outside subnet, etc).
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_dhcp_config",
+                "message": str(exc),
+            },
+        )
+    if iface is None:
+        raise HTTPException(status_code=404, detail="interface not found")
+    return _iface_out(iface)
+
+
+@router.get(
+    "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp",
+    response_model=ProjectInterfaceOut,
+)
+async def get_interface_dhcp(
+    project_id: str,
+    node_id: str,  # noqa: ARG001
+    iface_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the DHCP config for a router interface.
+
+    The frontend reads the same interface row it already gets from
+    the project detail endpoint; this one-extra endpoint is for the
+    poll-after-start case (the leases table needs to refresh).
+    """
+    iface = await project_service.get_dhcp_config(
+        session, project_id, iface_id
+    )
+    if iface is None:
+        raise HTTPException(status_code=404, detail="interface not found")
+    return _iface_out(iface)
 
 
 # ─── Link endpoints ───────────────────────────────────────────────────────

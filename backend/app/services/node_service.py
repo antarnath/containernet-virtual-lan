@@ -147,6 +147,106 @@ def _default_gateway_for(
     return None, None
 
 
+def _node_should_use_dhcp(
+    node: ProjectNode,
+    project: Project,
+    iface_by_id: dict,
+) -> bool:
+    """True if any of ``node``'s interfaces should be brought up via
+    DHCP rather than a static address.
+
+    M5-01 / 1.2. Walks every link this node participates in, looks
+    at the peer's interface, and returns True if:
+
+      * the peer is a router interface with ``dhcp_enabled=True``
+      * the local interface has no static ``ip_address`` set
+
+    The static-wins rule means a user who typed a static IP on
+    some (but not all) ifaces still gets DHCP only on the
+    un-configured ones — but our entrypoint runs udhcpc on ALL
+    non-eth0 ifaces if DHCP_ENABLED=1, so we want a single
+    node-level decision. We err on the side of "all DHCP" if any
+    iface is missing a static IP and has a DHCP peer. Hosts that
+    want static-only should set DHCP_ENABLED=0 themselves by
+    typing IPs on every iface.
+    """
+    for link in project.links:
+        if link.iface_a_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_a_id]
+            peer_iface_id = link.iface_b_id
+        elif link.iface_b_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_b_id]
+            peer_iface_id = link.iface_a_id
+        else:
+            continue
+        # Find the peer.
+        peer_iface = None
+        for n in project.nodes:
+            for i in n.interfaces:
+                if i.id == peer_iface_id:
+                    peer_iface = i
+                    break
+            if peer_iface is not None:
+                break
+        if peer_iface is None:
+            continue
+        if not getattr(peer_iface, "dhcp_enabled", False):
+            continue
+        # Peer has DHCP — if my iface is empty, I need DHCP.
+        if not my_iface.ip_address:
+            return True
+    return False
+
+
+def _dhcp_ifaces_for_node(
+    node: ProjectNode,
+    project: Project,
+    iface_by_id: dict,
+) -> list[str]:
+    """Return the container ethN names that should run udhcpc.
+
+    Mirrors the eth_index walk in ``_reattach_to_bridges``: the
+    first per-link bridge the node participates in becomes eth1,
+    the next eth2, etc. (eth0 is the docker default bridge, never
+    DHCP). Only the ifaces whose peer has ``dhcp_enabled=True``
+    AND whose local iface has no static IP are returned.
+    """
+    out: list[str] = []
+    eth_index = 1
+    seen_links: set[str] = set()
+    for link in project.links:
+        if link.id in seen_links:
+            continue
+        if link.iface_a_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_a_id]
+            peer_iface_id = link.iface_b_id
+        elif link.iface_b_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_b_id]
+            peer_iface_id = link.iface_a_id
+        else:
+            continue
+        seen_links.add(link.id)
+        # Find the peer.
+        peer_iface = None
+        for n in project.nodes:
+            for i in n.interfaces:
+                if i.id == peer_iface_id:
+                    peer_iface = i
+                    break
+            if peer_iface is not None:
+                break
+        if peer_iface is None:
+            eth_index += 1
+            continue
+        if (
+            getattr(peer_iface, "dhcp_enabled", False)
+            and not my_iface.ip_address
+        ):
+            out.append(f"eth{eth_index}")
+        eth_index += 1
+    return out
+
+
 # Command per kind. M4 phase 04 wraps every kind's command with the
 # per-link capture wrapper (infra/hosts/node_entrypoint.sh) which
 # starts a tcpdump per iface before execing the agent. Switches have
@@ -228,6 +328,72 @@ def _apply_capture_env(container, capture_lines: list[str]) -> None:
     node. That trade-off keeps the resume path simple.
     """
     return None
+
+
+def _ensure_veth_ip(
+    *,
+    client: docker.DockerClient,
+    container,
+    bridge_network_id: str,
+    bridge_subnet: str | None,
+    pinned_ip: str | None,
+    pinned_mask: str | None,
+    iface_name: str,
+) -> None:
+    """Make sure the veth inside the container has the pinned IP set.
+
+    ``net.connect(ipv4_address=...)`` reliably creates the endpoint
+    on the bridge side and assigns the IP there, but the IP often
+    does NOT show up on the veth inside the container's netns.
+    This is a known docker limitation: the endpoint-side
+    ``IPv4Address`` is correct, the netns-side ``ip addr`` is empty.
+    Without the IP, dnsmasq can't bind, the kernel can't route via
+    that interface, and the agent is invisible on that subnet.
+
+    We shell out to ``docker exec`` and ``ip addr add`` defensively
+    if the veth doesn't already have an IPv4. Errors are swallowed
+    (best-effort) so a missing IP doesn't block the rest of spawn.
+    """
+    if not pinned_ip:
+        return
+    try:
+        out = client.containers.get(container.id).exec_run(
+            ["ip", "-4", "-o", "addr", "show", "dev", iface_name],
+        )
+        if out.exit_code != 0:
+            print(
+                f"[veth_ip] {container.id[:12]} {iface_name}: "
+                f"ip show rc={out.exit_code}",
+                flush=True,
+            )
+            return
+        existing = out.output.decode("utf-8", errors="replace")
+        # If the iface already has any IPv4 in the right subnet,
+        # leave it alone.
+        if "inet " in existing:
+            print(
+                f"[veth_ip] {container.id[:12]} {iface_name}: "
+                f"already has inet ({existing.strip()!r}), skipping",
+                flush=True,
+            )
+            return
+        # Compute the CIDR for ip addr add.
+        cidr = f"{pinned_ip}{pinned_mask or '/24'}"
+        result = client.containers.get(container.id).exec_run(
+            ["ip", "addr", "add", cidr, "dev", iface_name],
+        )
+        print(
+            f"[veth_ip] {container.id[:12]} {iface_name}: "
+            f"ip addr add {cidr} rc={result.exit_code} "
+            f"out={result.output.decode('utf-8', errors='replace').strip()!r}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[veth_ip] {container.id[:12]} {iface_name}: exception {exc}", flush=True)
+        # Best-effort — the spawn will succeed even if this fails,
+        # and the entrypoint's per-link ``ip addr`` set by the
+        # kernel usually catches up.
+        return
 
 
 # ─── public API ────────────────────────────────────────────────────────
@@ -362,6 +528,29 @@ def spawn_node(
             env["DEFAULT_GATEWAY_IP"] = gw_ip
         if gw_iface:
             env["DEFAULT_GATEWAY_IFACE"] = gw_iface
+        # M5-01 / 1.2 — enable DHCP on the host if at least one of
+        # its interfaces is wired to a router interface that has
+        # ``dhcp_enabled=True``. The host's static IP, if any,
+        # wins: if the user typed ``ip_address`` on this iface,
+        # DHCP is OFF for that iface (the static address is what
+        # the entrypoint keeps). udhcpc in the entrypoint will
+        # only run if DHCP_ENABLED=1.
+        dhcp_enabled_for_node = _node_should_use_dhcp(
+            node, project, iface_by_id_pre
+        )
+        env["DHCP_ENABLED"] = "1" if dhcp_enabled_for_node else "0"
+        # Also tell the entrypoint WHICH ifaces to run udhcpc on.
+        # Walking every non-eth0 iface would include the backend
+        # network (10.10.0.0/16) and any pinned-IP iface — neither
+        # of which should DHCP. Only the ifaces that
+        # ``_node_should_use_dhcp`` identified as DHCP-pending get
+        # listed.
+        if dhcp_enabled_for_node:
+            dhcp_ifaces = _dhcp_ifaces_for_node(
+                node, project, iface_by_id_pre,
+            )
+            if dhcp_ifaces:
+                env["DHCP_IFACES"] = " ".join(dhcp_ifaces)
     # M4 phase 06 — force unbuffered Python output so the agent's
     # log lines appear in `docker logs` immediately. Without this
     # the buffer holds the messages until the container stops.
@@ -397,6 +586,13 @@ def spawn_node(
     }
     if kind == NodeKind.ROUTER:
         extra_kwargs["sysctls"] = {"net.ipv4.ip_forward": 1}
+        # M5-01 / 1.2 — if any interface on this router has DHCP
+        # enabled, set DHCP_ENABLED=1 so the router agent will
+        # actually start dnsmasq when /dhcp is called. The agent
+        # ignores /dhcp requests when DHCP_ENABLED=0, so this is
+        # the only signal it gets.
+        if any(getattr(i, "dhcp_enabled", False) for i in node.interfaces):
+            env["DHCP_ENABLED"] = "1"
     # M4 phase 06 — attackers expose the attack-control HTTP server on
     # 9092. The backend's attack_proxy reaches it via the shared
     # backend network (containernet_lan), so we do NOT publish the
@@ -559,6 +755,23 @@ def _reattach_to_bridges(
                 continue
             raise
 
+        # M5-01 / 1.2 — docker-py's ``net.connect(ipv4_address=...)``
+        # sets the IP on the bridge endpoint, but the veth inside the
+        # container's netns often doesn't get it. Without the IP on
+        # the veth, dnsmasq can't bind, the kernel can't route, and
+        # ``ping`` from a peer times out. Fix it with a defensive
+        # ``ip addr add`` if the iface is still empty.
+        if pinned:
+            _ensure_veth_ip(
+                client=client,
+                container=container,
+                bridge_network_id=bridge.network_id,
+                bridge_subnet=bridge.subnet_cidr,
+                pinned_ip=pinned,
+                pinned_mask=my_iface.subnet_mask,
+                iface_name=f"eth{eth_index}",
+            )
+
         # Record the ethN for this link so the entrypoint knows
         # which interface to tcpdump.
         if capture_lines is not None:
@@ -568,6 +781,22 @@ def _reattach_to_bridges(
         eth_index += 1
 
     # Attach to the backend's bridge (for DNS / heartbeats) if needed.
+    #
+    # M5-01 / 1.2 — Docker bridge networking has a known race where
+    # the backend's ARP cache for a freshly-attached container stays
+    # INCOMPLETE forever (kernel flag 0x0 in /proc/net/arp), even
+    # though the container is on the bridge and listening. Symptom:
+    # `socket.create_connection((<backend_network_ip>, 9090), timeout=N)`
+    # hangs and returns "timed out" or "No route to host" no matter
+    # how long you wait.
+    #
+    # The fix lives in ``router_proxy.set_dhcp`` / ``set_route``,
+    # which now call ``ensure_agent_reachable`` before the HTTP
+    # request. That helper does the disconnect+reconnect via
+    # ``subprocess`` (synchronous, waits for iptables rebuild).
+    # Doing it here, via docker-py, doesn't reliably refresh the
+    # bridge's iptables MASQUERADE rule — the docker daemon
+    # batches the endpoint-changed events.
     if needs_backend and backend_network:
         try:
             net = client.networks.get(backend_network)
@@ -577,6 +806,48 @@ def _reattach_to_bridges(
                 raise
 
     return NodeSpawnResult(container_id=container.id, attached_bridges=attached)
+
+
+def iface_name_in_container(
+    project: Project,
+    node: ProjectNode,
+    iface: ProjectInterface,
+) -> str | None:
+    """Map a user-supplied interface name (e.g. ``eth0``) to the
+    matching ethN inside the spawned container.
+
+    Returns ``None`` if the container hasn't been spawned yet or
+    if the iface isn't wired to any link (no veth was created for
+    it). The mapping is positional: per-link bridges are
+    attached in the same order as ``links`` in the project, with
+    the first per-link bridge becoming eth1, the next eth2, etc.
+    (eth0 is always the docker default bridge).
+
+    Used by ``project_lifecycle`` when pushing DHCP config to a
+    router — the dnsmasq config file must reference the actual
+    ethN inside the container, not the user-supplied name.
+    """
+    if not node.container_id:
+        return None
+    # Walk the project's links in the same order _reattach_to_bridges
+    # did, counting only the ones this node participates in.
+    iface_by_id = {i.id: i for i in node.interfaces}
+    eth_index = 1  # +1 to skip the default-bridge eth0
+    seen_links: set[str] = set()
+    for link in project.links:
+        if link.id in seen_links:
+            continue
+        if link.iface_a_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_a_id]
+        elif link.iface_b_id in iface_by_id:
+            my_iface = iface_by_id[link.iface_b_id]
+        else:
+            continue
+        seen_links.add(link.id)
+        if my_iface.id == iface.id:
+            return f"eth{eth_index}"
+        eth_index += 1
+    return None
 
 
 def stop_node(node_id: str, timeout: int = 5) -> bool:

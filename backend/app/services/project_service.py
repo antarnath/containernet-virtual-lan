@@ -27,6 +27,7 @@ CRUD shape.
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 
 from sqlalchemy import select
@@ -44,6 +45,7 @@ from app.models import (
     ProjectStatus,
 )
 from app.schemas.project import (
+    InterfaceDHCPConfigIn,
     ProjectCreateIn,
     ProjectInterfaceCreateIn,
     ProjectInterfaceUpdateIn,
@@ -467,6 +469,177 @@ async def delete_node(
 
 # ─── Interface CRUD ───────────────────────────────────────────────────────
 
+class DHCPConfigError(ValueError):
+    """Raised when a DHCP server config is invalid (422 to the API caller).
+
+    The error string is a human-readable list of violations; the API
+    layer turns it into a structured 422 response.
+    """
+
+
+async def set_dhcp_config(
+    session: AsyncSession,
+    project_id: str,
+    iface_id: str,
+    body: InterfaceDHCPConfigIn,
+) -> ProjectInterface | None:
+    """Configure the DHCP server on a router interface.
+
+    M5-01 feature 1.2. Validates:
+
+      * the interface belongs to a router node in the project
+      * if ``enabled=True``, pool_start and pool_end are both set and
+        ``pool_start <= pool_end`` numerically
+      * both pool endpoints lie inside the bridge subnet (the
+        ``subnet_cidr`` of the link that uses this interface)
+      * the interface itself has an IP inside that subnet (otherwise
+        the server can't bind to a sensible address)
+
+    On success, persists the new fields and returns the refreshed
+    interface. On validation failure, raises ``DHCPConfigError`` with
+    all violations as a multi-line message.
+
+    The actual ``dnsmasq`` start / config-file write happens at
+    ``start_project`` time (which is when the container actually
+    exists). The router agent's ``PUT /dhcp`` endpoint does the
+    dnsmasq dance; this service function just persists the intent.
+    """
+    # Load the interface, scoped to the project. We eagerly
+    # ``selectinload`` the node relationship so the check
+    # ``iface.node.kind`` below doesn't trigger a lazy load (which
+    # would fail with a MissingGreenlet after the session has done
+    # async I/O in this handler).
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id == iface_id,
+            ProjectNode.project_id == project_id,
+        )
+        .options(selectinload(ProjectInterface.node))
+    )
+    result = await session.execute(stmt)
+    iface = result.scalars().first()
+    if iface is None:
+        return None
+
+    # DHCP server only makes sense on router interfaces.
+    if iface.node.kind != "router":
+        raise DHCPConfigError(
+            f"DHCP server can only be enabled on router nodes; "
+            f"this interface is on a {iface.node.kind!r} node."
+        )
+
+    # If disabled, the rest of the validation is moot — clear any
+    # existing pool so the saved state is consistent.
+    if not body.enabled:
+        iface.dhcp_enabled = False
+        iface.dhcp_pool_start = None
+        iface.dhcp_pool_end = None
+        iface.dhcp_lease_time = body.lease_time
+        iface.dhcp_dns = body.dns
+        await session.commit()
+        await session.refresh(iface)
+        return iface
+
+    # Pool validation.
+    problems: list[str] = []
+    if not body.pool_start or not body.pool_end:
+        problems.append(
+            "pool_start and pool_end must both be set when DHCP is enabled."
+        )
+        # Bail out — we can't do subnet checks without endpoints.
+        raise DHCPConfigError(" ".join(problems))
+
+    try:
+        ps = ipaddress.IPv4Address(body.pool_start)
+        pe = ipaddress.IPv4Address(body.pool_end)
+    except (ipaddress.AddressValueError, ValueError) as exc:
+        raise DHCPConfigError(f"pool_start / pool_end invalid: {exc}")
+
+    if int(ps) > int(pe):
+        problems.append(
+            f"pool_start ({body.pool_start}) must be ≤ pool_end ({body.pool_end})."
+        )
+
+    # The interface must itself be on a link with a derived subnet.
+    # If not, the link was created without IPs on both sides — we
+    # can't validate the pool against the bridge subnet.
+    link_stmt = select(ProjectLink).where(
+        (ProjectLink.iface_a_id == iface_id)
+        | (ProjectLink.iface_b_id == iface_id)
+    )
+    lresult = await session.execute(link_stmt)
+    link = lresult.scalars().first()
+    if link is None or not link.subnet_cidr:
+        problems.append(
+            "DHCP can only be enabled on an interface that is wired to a "
+            "link with a known subnet. Wire the interface first and make "
+            "sure both endpoints have an IP and mask."
+        )
+        raise DHCPConfigError(" ".join(problems))
+
+    try:
+        bridge_net = ipaddress.ip_network(link.subnet_cidr, strict=False)
+    except ValueError as exc:
+        problems.append(f"link subnet {link.subnet_cidr!r} is invalid: {exc}")
+        raise DHCPConfigError(" ".join(problems))
+
+    if ps not in bridge_net:
+        problems.append(
+            f"pool_start {body.pool_start} is outside the bridge subnet "
+            f"{link.subnet_cidr}."
+        )
+    if pe not in bridge_net:
+        problems.append(
+            f"pool_end {body.pool_end} is outside the bridge subnet "
+            f"{link.subnet_cidr}."
+        )
+
+    # The router's own IP must not be inside the pool — dnsmasq would
+    # happily hand it out to a client.
+    if iface.ip_address:
+        try:
+            rip = ipaddress.IPv4Address(iface.ip_address)
+            if ps <= rip <= pe:
+                problems.append(
+                    f"the router's own IP {iface.ip_address} is inside the "
+                    f"pool — exclude it by narrowing pool_start/pool_end."
+                )
+        except ValueError:
+            pass
+
+    if problems:
+        raise DHCPConfigError(" ".join(problems))
+
+    iface.dhcp_enabled = True
+    iface.dhcp_pool_start = body.pool_start
+    iface.dhcp_pool_end = body.pool_end
+    iface.dhcp_lease_time = body.lease_time
+    iface.dhcp_dns = body.dns
+    await session.commit()
+    await session.refresh(iface)
+    return iface
+
+
+async def get_dhcp_config(
+    session: AsyncSession, project_id: str, iface_id: str
+) -> ProjectInterface | None:
+    """Return the interface row (caller reads dhcp_* fields).
+
+    M5-01 feature 1.2. Same scoping rules as set_dhcp_config.
+    """
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id == iface_id,
+            ProjectNode.project_id == project_id,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
 async def add_interface(
     session: AsyncSession,
     project_id: str,
@@ -626,9 +799,11 @@ async def add_link(
             f"are on node {a.node_id!r}."
         )
 
-    # Auto-derive the subnet_cidr from the two endpoints, if both are
-    # configured. Stored for query speed; the source of truth is the
-    # interface columns themselves.
+    # Auto-derive the subnet_cidr from the two endpoints. If both
+    # are configured, use the lower IP + the mask; if only one
+    # is configured (typical DHCP-client case), use that one
+    # endpoint's IP+mask. This is what the DHCP pool validator
+    # uses to confirm the pool lies inside the bridge subnet.
     subnet_cidr: str | None = None
     if a.ip_address and a.subnet_mask and b.ip_address and b.subnet_mask:
         if a.subnet_mask == b.subnet_mask:
@@ -636,6 +811,10 @@ async def add_link(
             ips = sorted([a.ip_address, b.ip_address])
             mask = a.subnet_mask  # already validated by the schema
             subnet_cidr = f"{ips[0]}{mask}"
+    elif a.ip_address and a.subnet_mask:
+        subnet_cidr = f"{a.ip_address}{a.subnet_mask}"
+    elif b.ip_address and b.subnet_mask:
+        subnet_cidr = f"{b.ip_address}{b.subnet_mask}"
 
     # Auto-pick the next subnet color slot. We count existing links
     # in the project + 1, cycling 1..6.

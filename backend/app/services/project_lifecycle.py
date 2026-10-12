@@ -245,6 +245,103 @@ async def start_project(
             "[lifecycle] route installation crashed for project %s",
             project.id,
         )
+    # M5-01 / 1.2 — push DHCP server config to every router that
+    # has at least one interface with dhcp_enabled. The router
+    # agent's ``PUT /dhcp`` writes the dnsmasq config file and
+    # SIGHUPs / starts dnsmasq. We do this AFTER status flips to
+    # RUNNING so a failure here doesn't tear the project down —
+    # the user will see the leases table stay empty and the
+    # dhcp_failed event we'll emit below.
+    for node in project.nodes:
+        kind_val = node.kind.value if hasattr(node.kind, "value") else str(node.kind)
+        if kind_val != "router" or not node.container_id:
+            continue
+        for iface in node.interfaces:
+            if not getattr(iface, "dhcp_enabled", False):
+                continue
+            try:
+                from app.services import router_proxy
+                from app.services.node_service import iface_name_in_container
+                # Translate the user-supplied iface name (e.g. ``eth0``)
+                # to the actual ethN inside the container (typically
+                # ``eth1`` for the first per-link bridge, since eth0
+                # is taken by the docker default bridge). The
+                # dnsmasq config written by the router agent MUST
+                # reference the real ethN — otherwise the agent
+                # configures the wrong interface and DHCP requests
+                # from the host never reach dnsmasq.
+                container_iface = iface_name_in_container(project, node, iface)
+                if not container_iface:
+                    log.warning(
+                        "[lifecycle] DHCP push: %s/%s — no container iface name; "
+                        "skipping (iface not wired?)",
+                        node.name, iface.name,
+                    )
+                    continue
+                # M5-01 / 1.2 — defensively re-set the veth IP
+                # right before the DHCP push. The earlier
+                # ``_ensure_veth_ip`` ran at spawn time, but the
+                # backend-bridge attach (and the
+                # ``ensure_agent_reachable`` bounce inside
+                # ``router_proxy.set_dhcp``) can clear it. The
+                # router agent now ALSO defends against a missing
+                # IP via ``_ensure_iface_ip`` (it runs in the
+                # container's netns with full caps), but doing it
+                # here too means the per-link capture sees the IP
+                # during DHCP traffic.
+                if iface.ip_address and iface.subnet_mask:
+                    try:
+                        from app.core.docker_client import get_docker_client
+                        from app.services.node_service import _ensure_veth_ip
+                        docker_client = get_docker_client()
+                        container_obj = docker_client.containers.get(
+                            node.container_id
+                        )
+                        _ensure_veth_ip(
+                            client=docker_client,
+                            container=container_obj,
+                            bridge_network_id=None,  # not used here
+                            bridge_subnet=None,
+                            pinned_ip=iface.ip_address,
+                            pinned_mask=iface.subnet_mask,
+                            iface_name=container_iface,
+                        )
+                    except Exception:
+                        pass
+                dhcp_result = await router_proxy.set_dhcp(
+                    node.container_id,
+                    interface=container_iface,
+                    enabled=True,
+                    pool_start=iface.dhcp_pool_start,
+                    pool_end=iface.dhcp_pool_end,
+                    lease_time=iface.dhcp_lease_time or 43200,
+                    dns=iface.dhcp_dns,
+                    expected_cidr=(
+                        f"{iface.ip_address}{iface.subnet_mask}"
+                        if iface.ip_address and iface.subnet_mask
+                        else None
+                    ),
+                )
+                if not dhcp_result.ok:
+                    log.warning(
+                        "[lifecycle] DHCP push: %s/%s → %s",
+                        node.name, iface.name, dhcp_result.error,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "[lifecycle] DHCP push failed for node=%s iface=%s: %s",
+                    node.name, iface.name, exc,
+                )
+                await event_service.emit_error(
+                    session,
+                    project.id,
+                    summary=f"DHCP push failed on {node.name}/{iface.name}: {exc}",
+                    detail={
+                        "node_id": node.id,
+                        "iface_id": iface.id,
+                        "phase": "dhcp_push",
+                    },
+                )
     return result
 
 

@@ -28,7 +28,8 @@ RUN apk add --no-cache \
         python3 \
         iproute2 \
         tcpdump \
-        bash
+        bash \
+        dnsmasq
 
 # Router agent source — copied in at build time. The build context
 # is the project root (set in docker-compose.yml), so the relative

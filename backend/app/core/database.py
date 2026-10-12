@@ -95,6 +95,31 @@ _PATCHES: list[tuple[str, str]] = [
         "ALTER TABLE projects ALTER COLUMN gateway DROP NOT NULL",
         "M4: relax projects.gateway NOT NULL",
     ),
+    # ─── M5-01 / 1.2: DHCP server config columns on project_interfaces.
+    # `dhcp_enabled` defaults to FALSE so existing rows remain OFF.
+    # `dhcp_pool_start` / `dhcp_pool_end` use INET so they match the
+    # existing `ip_address` column type. `dhcp_lease_time` defaults
+    # to 43200 (12h) so existing rows have a sensible value.
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+        "M5-01/1.2: add project_interfaces.dhcp_enabled",
+    ),
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_pool_start INET",
+        "M5-01/1.2: add project_interfaces.dhcp_pool_start",
+    ),
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_pool_end INET",
+        "M5-01/1.2: add project_interfaces.dhcp_pool_end",
+    ),
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_lease_time INTEGER NOT NULL DEFAULT 43200",
+        "M5-01/1.2: add project_interfaces.dhcp_lease_time",
+    ),
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_dns VARCHAR(255)",
+        "M5-01/1.2: add project_interfaces.dhcp_dns",
+    ),
 ]
 
 

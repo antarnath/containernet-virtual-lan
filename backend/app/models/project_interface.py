@@ -90,6 +90,27 @@ class ProjectInterface(Base):
     # Auto-generated at spawn time. NULL until phase 02 spawns the
     # container and queries the kernel for the veth's MAC.
     mac_address: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    # ── M5-01 / 1.2 DHCP server config (per router interface) ──
+    # dhcp_enabled=True means the router will run ``dnsmasq`` on this
+    # interface and hand out IPs from the configured pool. The router
+    # agent's ``PUT /dhcp`` endpoint reads these columns and writes a
+    # dnsmasq config file when the project starts.
+    dhcp_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    dhcp_pool_start: Mapped[str | None] = mapped_column(
+        _IPv4AddressINET(), nullable=True
+    )
+    dhcp_pool_end: Mapped[str | None] = mapped_column(
+        _IPv4AddressINET(), nullable=True
+    )
+    # Lease time in seconds. dnsmasq accepts a duration string but we
+    # keep the integer form in the DB so the API contract is simple.
+    # Defaults to 12h, the same default the spec uses.
+    dhcp_lease_time: Mapped[int] = mapped_column(default=43200, nullable=False)
+    # Comma-separated list of DNS servers (e.g. "8.8.8.8,1.1.1.1").
+    # Empty string means "no DNS option", letting dnsmasq fall back
+    # to its upstream defaults. Stored as a single text column for
+    # simplicity — the list form lives in the API layer.
+    dhcp_dns: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )

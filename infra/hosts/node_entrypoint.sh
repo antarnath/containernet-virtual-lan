@@ -81,10 +81,54 @@ done
 # 10.0.x subnets; we have to point the default route at a real
 # router in the topology for cross-subnet traffic to work.
 #
+# M5-01 / 1.2 — if DHCP_ENABLED=1, use udhcpc on every
+# non-default-bridge interface to get an IP from the router's
+# dnsmasq BEFORE we set the default route. Without DHCP, the
+# host has no IP on the topology bridge and udhcpc has nothing
+# to send from, so the order matters: DHCP first, then route.
+#
 # We auto-discover the right local interface by walking `ip -4
 # -o addr` and finding the iface whose subnet contains the
 # gateway IP. This works regardless of attach order because the
 # subnet is a property of the bridge, not of the order we joined.
+if [ "$DHCP_ENABLED" = "1" ]; then
+  # Run udhcpc on the per-link bridge ifaces only. We can't
+  # blanket-walk every non-eth0 iface because the backend network
+  # (containernet_lan, 10.10.0.0/16) is also attached as ethN —
+  # udhcpc there would just send DISCOVERs into the void and
+  # waste the retry budget.
+  #
+  # The backend sets DHCP_IFACES to a space-separated list of
+  # ifaces to try (typically the per-link ones). If unset, we
+  # fall back to "all eth* except eth0", but only when the iface
+  # has no IPv4 already (i.e. it's not the backend network).
+  if [ -n "$DHCP_IFACES" ]; then
+    for IFACE in $DHCP_IFACES; do
+      [ -z "$IFACE" ] && continue
+      if command -v udhcpc >/dev/null 2>&1; then
+        echo "node_entrypoint: udhcpc on $IFACE" >&2
+        udhcpc -i "$IFACE" -t 20 -T 3 -q -n 2>&1 | head -5 >&2 || true
+      fi
+    done
+  else
+    for IFACE in $(ls /sys/class/net 2>/dev/null | grep -E '^eth[0-9]+$'); do
+      [ "$IFACE" = "eth0" ] && continue
+      # Skip ifaces that already have an IPv4 — those are the
+      # backend bridge (10.10.0.0/16) and any iface that the
+      # user pinned a static IP to. DHCP only makes sense on
+      # ifaces that don't yet have an address.
+      if ip -4 -o addr show dev "$IFACE" 2>/dev/null | grep -q "inet "; then
+        continue
+      fi
+      if command -v udhcpc >/dev/null 2>&1; then
+        echo "node_entrypoint: udhcpc on $IFACE" >&2
+        udhcpc -i "$IFACE" -t 20 -T 3 -q -n 2>&1 | head -5 >&2 || true
+      fi
+    done
+  fi
+  # Give the kernel a beat to apply the lease.
+  sleep 1
+fi
 if [ -n "$DEFAULT_GATEWAY_IP" ]; then
   # Use a newline-iterating loop with `while read` so we don't lose
   # fields on whitespace. `-o` makes `ip` one-line per address.

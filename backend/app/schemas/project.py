@@ -162,6 +162,58 @@ class ProjectLinkCreateIn(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  M5-01 / 1.2 — DHCP server config (per router interface)
+# ═══════════════════════════════════════════════════════════════════════
+
+class InterfaceDHCPConfigIn(BaseModel):
+    """Body for PUT /api/projects/<pid>/nodes/<nid>/interfaces/<iid>/dhcp.
+
+    The pool endpoints must both be set when ``enabled=True`` and
+    must lie inside the bridge's subnet (validated server-side).
+    ``lease_time`` is in seconds (60..86400). ``dns`` is a
+    comma-separated IPv4 list (each entry validated).
+    """
+    enabled: bool = False
+    pool_start: str | None = None
+    pool_end: str | None = None
+    lease_time: int = 43200  # 12 hours
+    dns: str | None = None
+
+    @field_validator("pool_start", "pool_end")
+    @classmethod
+    def _valid_ipv4(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        try:
+            IPv4Address(v)
+        except ValueError as exc:
+            raise ValueError(f"must be a valid IPv4: {exc}")
+        return v
+
+    @field_validator("lease_time")
+    @classmethod
+    def _valid_lease(cls, v: int) -> int:
+        if not 60 <= v <= 86400:
+            raise ValueError("lease_time must be between 60 and 86400 seconds")
+        return v
+
+    @field_validator("dns")
+    @classmethod
+    def _valid_dns(cls, v: str | None) -> str | None:
+        if v is None or v.strip() == "":
+            return None
+        for part in v.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                IPv4Address(part)
+            except ValueError as exc:
+                raise ValueError(f"dns entry {part!r} must be a valid IPv4: {exc}")
+        return v
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  RESPONSES
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -172,6 +224,12 @@ class ProjectInterfaceOut(BaseModel):
     ip_address: str | None
     subnet_mask: str | None
     mac_address: str | None
+    # M5-01 / 1.2 — DHCP server config (router interfaces only).
+    dhcp_enabled: bool = False
+    dhcp_pool_start: str | None = None
+    dhcp_pool_end: str | None = None
+    dhcp_lease_time: int = 43200
+    dhcp_dns: str | None = None
     created_at: datetime
     updated_at: datetime
 
