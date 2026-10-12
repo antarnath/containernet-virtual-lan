@@ -257,7 +257,8 @@ async def start_project(
         if kind_val != "router" or not node.container_id:
             continue
         for iface in node.interfaces:
-            if not getattr(iface, "dhcp_enabled", False):
+            if not getattr(iface, "dhcp_enabled", False) \
+                    and not getattr(iface, "dhcp_relay_enabled", False):
                 continue
             try:
                 from app.services import router_proxy
@@ -308,25 +309,47 @@ async def start_project(
                         )
                     except Exception:
                         pass
-                dhcp_result = await router_proxy.set_dhcp(
-                    node.container_id,
-                    interface=container_iface,
-                    enabled=True,
-                    pool_start=iface.dhcp_pool_start,
-                    pool_end=iface.dhcp_pool_end,
-                    lease_time=iface.dhcp_lease_time or 43200,
-                    dns=iface.dhcp_dns,
-                    expected_cidr=(
-                        f"{iface.ip_address}{iface.subnet_mask}"
-                        if iface.ip_address and iface.subnet_mask
-                        else None
-                    ),
-                )
-                if not dhcp_result.ok:
-                    log.warning(
-                        "[lifecycle] DHCP push: %s/%s → %s",
-                        node.name, iface.name, dhcp_result.error,
+                # M5-01 / 1.3 — the iface may be a relay (not a
+                # server). The two paths share the veth-IP fix
+                # above; below we branch to the right router_proxy
+                # call.
+                if getattr(iface, "dhcp_relay_enabled", False):
+                    relay_result = await router_proxy.set_dhcp_relay(
+                        node.container_id,
+                        interface=container_iface,
+                        enabled=True,
+                        server_ip=iface.dhcp_relay_server,
+                        expected_cidr=(
+                            f"{iface.ip_address}{iface.subnet_mask}"
+                            if iface.ip_address and iface.subnet_mask
+                            else None
+                        ),
                     )
+                    if not relay_result.ok:
+                        log.warning(
+                            "[lifecycle] DHCP relay push: %s/%s → %s",
+                            node.name, iface.name, relay_result.error,
+                        )
+                else:
+                    dhcp_result = await router_proxy.set_dhcp(
+                        node.container_id,
+                        interface=container_iface,
+                        enabled=True,
+                        pool_start=iface.dhcp_pool_start,
+                        pool_end=iface.dhcp_pool_end,
+                        lease_time=iface.dhcp_lease_time or 43200,
+                        dns=iface.dhcp_dns,
+                        expected_cidr=(
+                            f"{iface.ip_address}{iface.subnet_mask}"
+                            if iface.ip_address and iface.subnet_mask
+                            else None
+                        ),
+                    )
+                    if not dhcp_result.ok:
+                        log.warning(
+                            "[lifecycle] DHCP push: %s/%s → %s",
+                            node.name, iface.name, dhcp_result.error,
+                        )
             except Exception as exc:
                 log.warning(
                     "[lifecycle] DHCP push failed for node=%s iface=%s: %s",

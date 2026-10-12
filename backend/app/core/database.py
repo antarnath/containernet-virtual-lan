@@ -120,6 +120,18 @@ _PATCHES: list[tuple[str, str]] = [
         "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_dns VARCHAR(255)",
         "M5-01/1.2: add project_interfaces.dhcp_dns",
     ),
+    # ─── M5-01 / 1.3: DHCP relay config columns on project_interfaces.
+    # `dhcp_relay_enabled` defaults to FALSE; `dhcp_relay_server` is
+    # nullable. Mutually exclusive with `dhcp_enabled` at the API
+    # layer (an iface is either a server or a relay, never both).
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_relay_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+        "M5-01/1.3: add project_interfaces.dhcp_relay_enabled",
+    ),
+    (
+        "ALTER TABLE project_interfaces ADD COLUMN IF NOT EXISTS dhcp_relay_server INET",
+        "M5-01/1.3: add project_interfaces.dhcp_relay_server",
+    ),
 ]
 
 

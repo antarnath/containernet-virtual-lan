@@ -44,5 +44,13 @@ COPY host-agent /app/host-agent
 COPY infra/hosts/node_entrypoint.sh /app/node_entrypoint.sh
 RUN chmod +x /app/node_entrypoint.sh
 
+# M5-01 / 1.3 — custom udhcpc client script that preserves the
+# placeholder IP on the iface if no lease is obtained. See
+# udhcpc_placeholder.sh for the rationale. node_entrypoint.sh
+# runs udhcpc with `-s /app/udhcpc_placeholder.sh` for DHCP
+# ifaces.
+COPY infra/hosts/udhcpc_placeholder.sh /app/udhcpc_placeholder.sh
+RUN chmod +x /app/udhcpc_placeholder.sh
+
 # Default command overridden in docker-compose.yml to run the agent.
 CMD ["sleep", "infinity"]

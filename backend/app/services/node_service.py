@@ -190,9 +190,13 @@ def _node_should_use_dhcp(
                 break
         if peer_iface is None:
             continue
-        if not getattr(peer_iface, "dhcp_enabled", False):
+        if not getattr(peer_iface, "dhcp_enabled", False) \
+                and not getattr(peer_iface, "dhcp_relay_enabled", False):
             continue
-        # Peer has DHCP — if my iface is empty, I need DHCP.
+        # Peer has DHCP (or DHCP relay) — if my iface is empty, I
+        # need DHCP. The relay case still requires the host to
+        # send a DISCOVER, so the logic is the same: missing IP
+        # on my side + DHCP/relay on the peer's side → run udhcpc.
         if not my_iface.ip_address:
             return True
     return False
@@ -239,7 +243,10 @@ def _dhcp_ifaces_for_node(
             eth_index += 1
             continue
         if (
-            getattr(peer_iface, "dhcp_enabled", False)
+            (
+                getattr(peer_iface, "dhcp_enabled", False)
+                or getattr(peer_iface, "dhcp_relay_enabled", False)
+            )
             and not my_iface.ip_address
         ):
             out.append(f"eth{eth_index}")
@@ -295,6 +302,56 @@ def _container_name(project_id: str, node_id: str, kind: NodeKind) -> str:
     nid = node_id.replace("-", "")[:6]
     kind_short = kind.value[:3]
     return f"cn-{short}-{kind_short}-{nid}"
+
+
+def _peer_has_dhcp(
+    link: ProjectLink,
+    my_iface: ProjectInterface,
+    iface_by_id: dict,
+) -> bool:
+    """Return True if the peer on ``link`` has DHCP server or relay enabled.
+
+    Used during spawn_node to decide whether the local iface needs
+    a placeholder IPv4 before udhcpc can broadcast a DISCOVER
+    (the kernel drops L2 broadcasts from ifaces with no IPv4
+    address, because the UDP header has no source to fill in).
+    """
+    peer_id = (
+        link.iface_b_id
+        if link.iface_a_id == my_iface.id
+        else link.iface_a_id
+    )
+    peer = iface_by_id.get(peer_id)
+    if peer is None:
+        return False
+    return bool(
+        getattr(peer, "dhcp_enabled", False)
+        or getattr(peer, "dhcp_relay_enabled", False)
+    )
+
+
+def _subnet_placeholder_ip(bridge_subnet: str | None) -> str | None:
+    """Return the .2 address of the bridge subnet (a safe placeholder).
+
+    Used as a transient IPv4 on a DHCP-peer iface: the kernel needs
+    *some* source address to put on the DHCP DISCOVER packet, so we
+    hand out the .2 of the subnet (the router takes .1, the DHCP
+    pool starts at .100, so .2 is universally free). The udhcpc
+    lease overwrites this on success — the placeholder is purely a
+    way to get udhcpc's first DHCPDISCOVER on the wire.
+
+    Returns None if the subnet can't be parsed (e.g. a /30
+    default-subnet edge case).
+    """
+    if not bridge_subnet:
+        return None
+    try:
+        net = ipaddress.IPv4Network(bridge_subnet, strict=False)
+    except (ipaddress.AddressValueError, ValueError):
+        return None
+    # .2 = network + 2. In a /24 it's just the second usable address.
+    # For a /30 this lands inside the 4-address block.
+    return str(net.network_address + 2)
 
 
 def _iface_subnet_for_bridge(
@@ -593,6 +650,12 @@ def spawn_node(
         # the only signal it gets.
         if any(getattr(i, "dhcp_enabled", False) for i in node.interfaces):
             env["DHCP_ENABLED"] = "1"
+        # M5-01 / 1.3 — same idea, but for DHCP relay. The agent
+        # starts dnsmasq on relay too (it needs the relay-mode
+        # binary running to forward DISCOVERs), so a separate
+        # signal is needed.
+        if any(getattr(i, "dhcp_relay_enabled", False) for i in node.interfaces):
+            env["DHCP_RELAY_ENABLED"] = "1"
     # M4 phase 06 — attackers expose the attack-control HTTP server on
     # 9092. The backend's attack_proxy reaches it via the shared
     # backend network (containernet_lan), so we do NOT publish the
@@ -676,6 +739,18 @@ def _reattach_to_bridges(
     )
 
     iface_by_id = {i.id: i for i in interfaces}
+    # Build a separate dict of peer ifaces. We use it to look up
+    # the peer's DHCP/relay config (for the placeholder-IP branch
+    # below) but NOT for the local iface lookup in the link
+    # loop — that one needs to match this node's own ifaces only,
+    # otherwise the first iface that happens to be in
+    # ``iface_by_id`` (e.g. a peer's) would shadow our own.
+    peer_iface_by_id: dict[str, ProjectInterface] = {}
+    for peer_node in project.nodes:
+        if peer_node.id == node.id:
+            continue
+        for pi in peer_node.interfaces:
+            peer_iface_by_id[pi.id] = pi
     attached: list[str] = []
     seen_networks: set[str] = set()
     # Docker assigns eth0, eth1, … in the order we call
@@ -697,6 +772,7 @@ def _reattach_to_bridges(
             my_iface = iface_by_id[link.iface_a_id]
         elif link.iface_b_id in iface_by_id:
             my_iface = iface_by_id[link.iface_b_id]
+        # (debug log removed)
         if my_iface is None:
             continue
 
@@ -761,6 +837,15 @@ def _reattach_to_bridges(
         # the veth, dnsmasq can't bind, the kernel can't route, and
         # ``ping`` from a peer times out. Fix it with a defensive
         # ``ip addr add`` if the iface is still empty.
+        #
+        # For DHCP-peer ifaces (no ``pinned``), the host's udhcpc
+        # needs *some* IPv4 in the bridge subnet to send a
+        # DHCPDISCOVER — the kernel drops L2 broadcasts from an
+        # iface with no IPv4 because there's no source address to
+        # fill in the UDP header. We assign the .2 of the subnet
+        # (typically the lowest usable address; the router is at .1
+        # and the pool starts at .100 so .2 is safe) as a
+        # placeholder. udhcpc's lease will overwrite it on success.
         if pinned:
             _ensure_veth_ip(
                 client=client,
@@ -771,6 +856,25 @@ def _reattach_to_bridges(
                 pinned_mask=my_iface.subnet_mask,
                 iface_name=f"eth{eth_index}",
             )
+        else:
+            # DHCP-peer case. Look up the peer's DHCP config: if
+            # the peer on this link has DHCP enabled or relay
+            # enabled, this iface is supposed to get its address
+            # from DHCP. We need a placeholder IP.
+            peer_dhcp = _peer_has_dhcp(link, my_iface, peer_iface_by_id)
+            if peer_dhcp and bridge.subnet_cidr:
+                placeholder = _subnet_placeholder_ip(bridge.subnet_cidr)
+                if placeholder:
+                    _ensure_veth_ip(
+                        client=client,
+                        container=container,
+                        bridge_network_id=bridge.network_id,
+                        bridge_subnet=bridge.subnet_cidr,
+                        pinned_ip=placeholder,
+                        pinned_mask=my_iface.subnet_mask,
+                        iface_name=f"eth{eth_index}",
+                    )
+        # (debug log removed)
 
         # Record the ethN for this link so the entrypoint knows
         # which interface to tcpdump.

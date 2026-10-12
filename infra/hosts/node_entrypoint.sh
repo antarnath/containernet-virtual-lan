@@ -107,7 +107,21 @@ if [ "$DHCP_ENABLED" = "1" ]; then
       [ -z "$IFACE" ] && continue
       if command -v udhcpc >/dev/null 2>&1; then
         echo "node_entrypoint: udhcpc on $IFACE" >&2
-        udhcpc -i "$IFACE" -t 20 -T 3 -q -n 2>&1 | head -5 >&2 || true
+        # -B: ask the server to broadcast its replies. Without
+        # this flag, busybox udhcpc 1.36.1 leaves the BOOTP
+        # broadcast bit clear in DISCOVER, and dnsmasq then
+        # unicasts the OFFER to yiaddr (the lease IP) — which
+        # the client doesn't have yet, so the OFFER is dropped
+        # by the kernel. The broadcast bit is the only way for
+        # a host with no IP to receive an OFFER.
+        # -s /app/udhcpc_placeholder.sh: custom script that
+        # preserves the placeholder IP we set during spawn
+        # when no lease is obtained. The default udhcpc script
+        # flushes the iface on `deconfig` which loses the
+        # placeholder and makes the next DISCOVER unsendable
+        # (kernel drops L2 bcasts from an iface with no IPv4).
+        udhcpc -i "$IFACE" -B -t 20 -T 3 -q -n \
+          -s /app/udhcpc_placeholder.sh 2>&1 | head -5 >&2 || true
       fi
     done
   else
@@ -122,7 +136,8 @@ if [ "$DHCP_ENABLED" = "1" ]; then
       fi
       if command -v udhcpc >/dev/null 2>&1; then
         echo "node_entrypoint: udhcpc on $IFACE" >&2
-        udhcpc -i "$IFACE" -t 20 -T 3 -q -n 2>&1 | head -5 >&2 || true
+        udhcpc -i "$IFACE" -B -t 20 -T 3 -q -n \
+          -s /app/udhcpc_placeholder.sh 2>&1 | head -5 >&2 || true
       fi
     done
   fi

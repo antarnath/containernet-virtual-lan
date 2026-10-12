@@ -46,6 +46,7 @@ from app.models import (
 )
 from app.schemas.project import (
     InterfaceDHCPConfigIn,
+    InterfaceDHCPRelayConfigIn,
     ProjectCreateIn,
     ProjectInterfaceCreateIn,
     ProjectInterfaceUpdateIn,
@@ -530,6 +531,15 @@ async def set_dhcp_config(
             f"this interface is on a {iface.node.kind!r} node."
         )
 
+    # M5-01 / 1.3 — a single iface is either a DHCP server or a
+    # DHCP relay, never both. Reject the request if relay is
+    # currently enabled on the same iface.
+    if body.enabled and getattr(iface, "dhcp_relay_enabled", False):
+        raise DHCPConfigError(
+            "DHCP server and DHCP relay are mutually exclusive on the "
+            "same interface. Disable the relay first."
+        )
+
     # If disabled, the rest of the validation is moot — clear any
     # existing pool so the saved state is consistent.
     if not body.enabled:
@@ -639,6 +649,96 @@ async def get_dhcp_config(
     )
     result = await session.execute(stmt)
     return result.scalars().first()
+
+
+# ─── M5-01 / 1.3 — DHCP relay ──────────────────────────────────────────
+
+async def set_dhcp_relay_config(
+    session: AsyncSession,
+    project_id: str,
+    iface_id: str,
+    body: InterfaceDHCPRelayConfigIn,
+) -> ProjectInterface | None:
+    """Configure the DHCP relay on a router interface.
+
+    M5-01 feature 1.3. Validates:
+
+      * the interface belongs to a router node in the project
+      * if ``enabled=True``, ``server_ip`` is set and is a valid
+        IPv4 reachable from this router (we only check the
+        format — reachability is a network-level concern the
+        start path will surface)
+      * mutual exclusion with ``dhcp_enabled``: an iface is either
+        a server or a relay, never both
+
+    On success, persists the new fields and returns the refreshed
+    interface. On validation failure, raises ``DHCPConfigError``
+    with a multi-line message.
+
+    The actual ``dnsmasq`` config-file write happens at
+    ``start_project`` time, just like the server case. The router
+    agent's ``PUT /dhcp/relay`` endpoint does the dnsmasq dance;
+    this service function just persists the intent.
+    """
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectInterface.id == iface_id,
+            ProjectNode.project_id == project_id,
+        )
+        .options(selectinload(ProjectInterface.node))
+    )
+    result = await session.execute(stmt)
+    iface = result.scalars().first()
+    if iface is None:
+        return None
+
+    if iface.node.kind != "router":
+        raise DHCPConfigError(
+            f"DHCP relay can only be enabled on router nodes; "
+            f"this interface is on a {iface.node.kind!r} node."
+        )
+
+    # Mutual exclusion with DHCP server on the same iface.
+    if body.enabled and getattr(iface, "dhcp_enabled", False):
+        raise DHCPConfigError(
+            "DHCP relay and DHCP server are mutually exclusive on the "
+            "same interface. Disable the server first."
+        )
+
+    # When disabled, clear the server_ip so the saved state is
+    # consistent (a stale server_ip after a toggle-off would be
+    # confusing).
+    if not body.enabled:
+        iface.dhcp_relay_enabled = False
+        iface.dhcp_relay_server = None
+        await session.commit()
+        await session.refresh(iface)
+        return iface
+
+    if not body.server_ip:
+        raise DHCPConfigError(
+            "server_ip is required when DHCP relay is enabled."
+        )
+
+    # The interface must have an IP itself — the relay uses the
+    # iface's IP as the giaddr (the address the relay inserts
+    # into the DHCP packet so the server knows which subnet to
+    # serve). Without an IP on the iface, dnsmasq can't write a
+    # valid dhcp-relay line.
+    if not iface.ip_address:
+        raise DHCPConfigError(
+            "DHCP relay requires the interface to have its own IP "
+            "(the IP is used as the giaddr). Assign an IP to this "
+            "interface first."
+        )
+
+    iface.dhcp_relay_enabled = True
+    iface.dhcp_relay_server = body.server_ip
+    await session.commit()
+    await session.refresh(iface)
+    return iface
 
 async def add_interface(
     session: AsyncSession,

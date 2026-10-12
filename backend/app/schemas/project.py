@@ -214,6 +214,37 @@ class InterfaceDHCPConfigIn(BaseModel):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  M5-01 / 1.3 — DHCP relay config (per router interface)
+# ═══════════════════════════════════════════════════════════════════════
+
+class InterfaceDHCPRelayConfigIn(BaseModel):
+    """Body for PUT /api/projects/<pid>/nodes/<nid>/interfaces/<iid>/dhcp/relay.
+
+    A single interface is either a DHCP *server* (feature 1.2) or a
+    DHCP *relay* (feature 1.3) — never both. Validation of the
+    mutual exclusion is done in the service layer because it needs
+    to see the current state of the iface's ``dhcp_enabled`` field.
+    ``server_ip`` is the IPv4 of the upstream DHCP server that
+    should receive the relayed DISCOVERs. The iface is the one on
+    which DISCOVERs are received from clients — the relay uses
+    that iface's IP as the giaddr.
+    """
+    enabled: bool = False
+    server_ip: str | None = None
+
+    @field_validator("server_ip")
+    @classmethod
+    def _valid_server_ip(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        try:
+            IPv4Address(v)
+        except ValueError as exc:
+            raise ValueError(f"must be a valid IPv4: {exc}")
+        return v
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  RESPONSES
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -230,6 +261,11 @@ class ProjectInterfaceOut(BaseModel):
     dhcp_pool_end: str | None = None
     dhcp_lease_time: int = 43200
     dhcp_dns: str | None = None
+    # M5-01 / 1.3 — DHCP relay config (router interfaces only).
+    # Mutually exclusive with ``dhcp_enabled``; a single iface is
+    # either a server or a relay, never both.
+    dhcp_relay_enabled: bool = False
+    dhcp_relay_server: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -373,6 +373,66 @@ async def set_dhcp(
     return last or DHCPConfigResult(ok=False, error="unknown")
 
 
+# ─── M5-01 / 1.3 — DHCP relay push ────────────────────────────────────
+
+async def set_dhcp_relay(
+    container_id: str | None,
+    *,
+    interface: str,
+    enabled: bool,
+    server_ip: str | None = None,
+    expected_cidr: str | None = None,
+) -> DHCPConfigResult:
+    """Push a DHCP relay config to a router via ``PUT /dhcp/relay``.
+
+    Same retry-on-connection-refused pattern as ``set_dhcp`` — the
+    agent may not be bound yet right after ``containers.run``. The
+    agent writes the ``dhcp-relay=...`` line into
+    /etc/dnsmasq.d/<iface>.conf and SIGHUPs dnsmasq.
+    """
+    if not container_id:
+        return DHCPConfigResult(ok=False, error="no container_id")
+    await asyncio.sleep(2.0)
+    await asyncio.to_thread(ensure_agent_reachable, container_id)
+    url = agent_url(container_id, "/dhcp/relay")
+    if not url:
+        for _ in range(15):
+            await asyncio.sleep(0.5)
+            url = agent_url(container_id, "/dhcp/relay")
+            if url:
+                break
+    if not url:
+        return DHCPConfigResult(ok=False, error="agent unreachable (no url)")
+    body = json.dumps({
+        "interface": interface,
+        "enabled": enabled,
+        "server_ip": server_ip,
+        "expected_cidr": expected_cidr,
+    }).encode("utf-8")
+    last: DHCPConfigResult | None = None
+    for attempt in range(15):
+        result = await asyncio.to_thread(_put_json, url, body)
+        if result.ok:
+            print(f"[router_proxy] set_dhcp_relay {url} attempt {attempt}: OK", flush=True)
+            return result
+        last = result
+        print(
+            f"[router_proxy] set_dhcp_relay {url} attempt {attempt}: {result.error}",
+            flush=True,
+        )
+        err = (result.error or "").lower()
+        if (
+            "refused" not in err
+            and "timeout" not in err
+            and "reset" not in err
+            and "no route" not in err
+            and "unreachable" not in err
+        ):
+            return result
+        await asyncio.sleep(0.5)
+    return last or DHCPConfigResult(ok=False, error="unknown")
+
+
 def _put_json(url: str, body: bytes) -> DHCPConfigResult:
     """Blocking PUT. Runs inside ``asyncio.to_thread``."""
     req = urllib.request.Request(

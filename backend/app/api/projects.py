@@ -52,6 +52,7 @@ from app.services import (
 log = logging.getLogger(__name__)
 from app.schemas.project import (
     InterfaceDHCPConfigIn,
+    InterfaceDHCPRelayConfigIn,
     ProjectCreateIn,
     ProjectDetailOut,
     ProjectInterfaceCreateIn,
@@ -122,6 +123,9 @@ def _iface_out(i) -> ProjectInterfaceOut:
     pool_end = i.dhcp_pool_end
     if pool_end is not None and not isinstance(pool_end, str):
         pool_end = str(pool_end)
+    relay_server = getattr(i, "dhcp_relay_server", None)
+    if relay_server is not None and not isinstance(relay_server, str):
+        relay_server = str(relay_server)
     return ProjectInterfaceOut(
         id=i.id,
         node_id=i.node_id,
@@ -134,6 +138,8 @@ def _iface_out(i) -> ProjectInterfaceOut:
         dhcp_pool_end=pool_end,
         dhcp_lease_time=int(i.dhcp_lease_time or 0),
         dhcp_dns=i.dhcp_dns,
+        dhcp_relay_enabled=bool(getattr(i, "dhcp_relay_enabled", False)),
+        dhcp_relay_server=relay_server,
         created_at=i.created_at,
         updated_at=i.updated_at,
     )
@@ -530,6 +536,46 @@ async def get_interface_dhcp(
     iface = await project_service.get_dhcp_config(
         session, project_id, iface_id
     )
+    if iface is None:
+        raise HTTPException(status_code=404, detail="interface not found")
+    return _iface_out(iface)
+
+
+# ─── DHCP relay endpoints (M5-01 / 1.3) ──────────────────────────────────
+
+@router.put(
+    "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp/relay",
+    response_model=ProjectInterfaceOut,
+)
+async def set_interface_dhcp_relay(
+    project_id: str,
+    node_id: str,  # noqa: ARG001 (URL symmetry)
+    iface_id: str,
+    body: InterfaceDHCPRelayConfigIn,
+    session: AsyncSession = Depends(get_session),
+):
+    """Configure the DHCP relay on a router interface.
+
+    M5-01 feature 1.3. The router agent's ``PUT /dhcp/relay``
+    endpoint (called by the backend at start time) is what
+    actually configures ``dnsmasq``'s ``dhcp-relay=...`` line;
+    this endpoint just persists the user's intent. Validation:
+    server_ip must be a valid IPv4 and the iface must have its
+    own IP (used as the giaddr). Mutually exclusive with the
+    DHCP server on the same iface. On failure, returns 422.
+    """
+    try:
+        iface = await project_service.set_dhcp_relay_config(
+            session, project_id, iface_id, body
+        )
+    except project_service.DHCPConfigError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_dhcp_relay_config",
+                "message": str(exc),
+            },
+        )
     if iface is None:
         raise HTTPException(status_code=404, detail="interface not found")
     return _iface_out(iface)

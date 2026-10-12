@@ -111,6 +111,21 @@ class ProjectInterface(Base):
     # to its upstream defaults. Stored as a single text column for
     # simplicity — the list form lives in the API layer.
     dhcp_dns: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # ── M5-01 / 1.3 DHCP relay (per router interface) ──
+    # ``dhcp_relay_enabled=True`` means the router will run
+    # ``dnsmasq`` on this interface in relay mode, forwarding any
+    # DHCP DISCOVERs received on the iface to ``dhcp_relay_server``
+    # and forwarding the OFFER back. Mutually exclusive with
+    # ``dhcp_enabled`` (a single iface is either a server or a
+    # relay, never both). The router agent's ``PUT /dhcp/relay``
+    # endpoint writes a ``dhcp-relay=...`` line into
+    # /etc/dnsmasq.d/<iface>.conf and SIGHUPs dnsmasq.
+    dhcp_relay_enabled: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )
+    dhcp_relay_server: Mapped[str | None] = mapped_column(
+        _IPv4AddressINET(), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
