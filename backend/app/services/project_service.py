@@ -100,6 +100,21 @@ class LinkEndpointsError(ValueError):
     """The two endpoints of a link are not on different nodes."""
 
 
+class DuplicateIPError(ValueError):
+    """Two interfaces in the same project share the same IP address.
+
+    M5-01 feature 1.10. The frontend shows the conflict list in a red
+    banner; the API returns 409 with a structured body.
+    """
+    def __init__(self, conflicts: list[dict]) -> None:
+        self.conflicts = conflicts
+        n = len(conflicts)
+        ips = ", ".join(c["ip"] for c in conflicts[:3])
+        super().__init__(
+            f"{n} duplicate IP address{'es' if n != 1 else ''} found: {ips}"
+        )
+
+
 # ─── helpers ──────────────────────────────────────────────────────────────
 
 _NODE_KIND_LABEL = {
@@ -141,6 +156,82 @@ def _next_subnet_color_index(session: AsyncSession, project_id: str) -> int:
     # split so the service layer can stay async without a tiny
     # helper DB query just for the color.
     raise NotImplementedError  # replaced by the caller pattern below
+
+
+async def find_duplicate_ips(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    exclude_iface_id: str | None = None,
+    candidate_ip: str | None = None,
+) -> list[dict]:
+    """Return a list of ``{ip, interface_ids, node_names}`` describing
+    duplicate-IP conflicts in the project.
+
+    M5-01 feature 1.10. An interface with a NULL ``ip_address`` is
+    ignored (it's a switch port or a not-yet-typed port).
+
+    If ``exclude_iface_id`` is given, that interface is omitted from
+    the scan — used by the update path so an interface being changed
+    doesn't appear to conflict with itself.
+
+    If ``candidate_ip`` is given, the function also treats that IP as
+    if it were already on an interface in the project. This is used
+    by the create path where the new interface isn't in the DB yet
+    but we still want to detect "adding this would create a
+    duplicate". The candidate is reported in the returned conflicts
+    but does not appear in the stored ``interface_ids`` list (so the
+    UI doesn't see a fake ID).
+
+    The returned list is sorted by IP for stable output.
+    """
+    stmt = (
+        select(ProjectInterface)
+        .join(ProjectNode, ProjectInterface.node_id == ProjectNode.id)
+        .where(
+            ProjectNode.project_id == project_id,
+            ProjectInterface.ip_address.is_not(None),
+        )
+    )
+    if exclude_iface_id is not None:
+        stmt = stmt.where(ProjectInterface.id != exclude_iface_id)
+    result = await session.execute(stmt)
+    ifaces = result.scalars().all()
+
+    by_ip: dict[str, list[ProjectInterface]] = {}
+    node_cache: dict[str, ProjectNode] = {}
+    for iface in ifaces:
+        by_ip.setdefault(iface.ip_address, []).append(iface)
+        node_cache.setdefault(iface.node_id, None)  # placeholder
+
+    # Resolve node names in one query rather than per-iface.
+    if node_cache:
+        node_stmt = select(ProjectNode).where(
+            ProjectNode.id.in_(list(node_cache.keys()))
+        )
+        nresult = await session.execute(node_stmt)
+        for n in nresult.scalars().all():
+            node_cache[n.id] = n
+
+    conflicts: list[dict] = []
+    for ip, entries in by_ip.items():
+        # A conflict exists when:
+        #   • the IP already appears on 2+ stored interfaces, OR
+        #   • the IP appears on 1 stored interface AND it matches the
+        #     candidate (the new interface would make it 2).
+        if len(entries) >= 2 or (len(entries) == 1 and ip == candidate_ip):
+            node_names = []
+            for e in entries:
+                n = node_cache.get(e.node_id)
+                node_names.append(n.name if n is not None else "?")
+            conflicts.append({
+                "ip": ip,
+                "interface_ids": [e.id for e in entries],
+                "node_names": node_names,
+            })
+    # Stable order: by IP, ascending.
+    conflicts.sort(key=lambda c: tuple(int(x) for x in c["ip"].split(".")))
+    return conflicts
 
 
 # ─── Project CRUD ─────────────────────────────────────────────────────────
@@ -387,6 +478,20 @@ async def add_interface(
     if node is None:
         raise NodeNotFoundError(node_id)
 
+    # M5-01 / 1.10 — duplicate-IP guard. Check BEFORE adding so the
+    # conflict is detected against the existing set, not the new
+    # row (a freshly-added row would always appear to "conflict"
+    # with itself when scanned). We pass the new IP as a
+    # ``candidate_ip`` so the function can detect "adding this IP
+    # would make a currently-unique IP become duplicated". If a
+    # conflict is found, raise without ever inserting the row.
+    if body.ip_address:
+        conflicts = await find_duplicate_ips(
+            session, project_id, candidate_ip=body.ip_address
+        )
+        if any(c["ip"] == body.ip_address for c in conflicts):
+            raise DuplicateIPError(conflicts)
+
     iface = ProjectInterface(
         node_id=node_id,
         name=body.name,
@@ -420,6 +525,24 @@ async def update_interface(
     iface = result.scalars().first()
     if iface is None:
         return None
+
+    # M5-01 / 1.10 — duplicate-IP guard. We exclude the interface
+    # being updated so it doesn't appear to conflict with itself,
+    # and we pass the new IP as a candidate so the function can
+    # detect "this change would make an existing 1-instance IP
+    # become a 2-instance IP". We check BEFORE writing the new
+    # value so a conflict raises without leaving the row in a
+    # half-edited state.
+    if body.ip_address is not None and body.ip_address != iface.ip_address:
+        conflicts = await find_duplicate_ips(
+            session,
+            project_id,
+            exclude_iface_id=iface_id,
+            candidate_ip=body.ip_address,
+        )
+        if any(c["ip"] == body.ip_address for c in conflicts):
+            raise DuplicateIPError(conflicts)
+
     if body.name is not None:
         iface.name = body.name
     if body.ip_address is not None:

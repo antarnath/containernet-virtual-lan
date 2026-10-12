@@ -388,6 +388,16 @@ async def add_interface(
         )
     except project_service.NodeNotFoundError:
         raise HTTPException(status_code=404, detail="node not found")
+    except project_service.DuplicateIPError as exc:
+        # M5-01 / 1.10 — 409 with structured conflict body.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_ips",
+                "message": "Two or more interfaces share the same IP.",
+                "conflicts": exc.conflicts,
+            },
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _iface_out(iface)
@@ -403,9 +413,20 @@ async def update_interface(
     body: ProjectInterfaceUpdateIn,
     session: AsyncSession = Depends(get_session),
 ):
-    iface = await project_service.update_interface(
-        session, project_id, iface_id, body
-    )
+    try:
+        iface = await project_service.update_interface(
+            session, project_id, iface_id, body
+        )
+    except project_service.DuplicateIPError as exc:
+        # M5-01 / 1.10 — same conflict response on update.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_ips",
+                "message": "Two or more interfaces share the same IP.",
+                "conflicts": exc.conflicts,
+            },
+        )
     if iface is None:
         raise HTTPException(status_code=404, detail="interface not found")
     return _iface_out(iface)
@@ -502,6 +523,22 @@ async def start_project(
     is a no-op. A call after a partial start resumes from wherever
     the previous run crashed.
     """
+    # M5-01 / 1.10 — defense-in-depth duplicate-IP check at start
+    # time. The save path (add_interface / update_interface) already
+    # blocks this, but the user could load an old project from before
+    # this check existed, or import a topology from a file. The
+    # check is cheap (one query, no writes) and saves a half-broken
+    # spawn.
+    conflicts = await project_service.find_duplicate_ips(session, project_id)
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "duplicate_ips",
+                "message": "Project has duplicate IPs; cannot start.",
+                "conflicts": conflicts,
+            },
+        )
     try:
         result = await project_lifecycle.start_project(session, project_id)
     except ValueError as exc:
