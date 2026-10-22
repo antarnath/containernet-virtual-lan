@@ -245,6 +245,118 @@ def _start_dnsmasq() -> tuple[bool, str]:
         return False, f"failed to start dnsmasq: {exc}"
 
 
+def _served_ifaces() -> set[str]:
+    """The set of interfaces dnsmasq currently has a socket bound to.
+
+    dnsmasq binds one listening socket per ``interface=`` line at
+    process start. A SIGHUP re-reads the config text and re-applies
+    ranges and reservations, but it does NOT create sockets for
+    interfaces that were not bound when the process started. So the
+    set of bound interfaces is a property of the running process,
+    not of the files on disk.
+
+    Derived from the process's actual socket table rather than from
+    the config files — the whole point is to compare what dnsmasq
+    *is* serving against what we have *asked* it to serve.
+    """
+    if not _dnsmasq_running():
+        return set()
+    served: set[str] = set()
+    try:
+        out = subprocess.run(
+            ["ss", "-lunp"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return served
+    # dnsmasq binds port 53 (DNS) and/or 67 (DHCP) per interface.
+    # With no bind-interfaces wildcard, every served interface shows
+    # up as "<ip>:53" or "<ip>:67" owned by dnsmasq.
+    for line in out.splitlines():
+        if "dnsmasq" not in line:
+            continue
+        parts = line.split()
+        # ss -lunp format: State Recv-Q Send-Q Local:Port Peer:Port Process
+        # Older busybox ss omits the State column, so scan every
+        # whitespace field for a ":<port>" suffix instead of
+        # indexing a fixed position.
+        for field in parts:
+            if field.startswith("0.0.0.0:"):
+                continue  # wildcard bind, tells us nothing
+            if field.endswith(":53") or field.endswith(":67"):
+                addr = field.rsplit(":", 1)[0]
+                if addr and addr != "*":
+                    served.add(addr)
+                    break
+    return served
+
+
+def _iface_ip(iface: str) -> str | None:
+    """First global IPv4 on ``iface``, or None."""
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", iface],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        if "inet " not in line:
+            continue
+        cidr = line.split("inet ", 1)[1].split()[0]
+        return cidr.split("/")[0]
+    return None
+
+
+def _restart_dnsmasq() -> tuple[bool, str]:
+    """Stop dnsmasq and start it again.
+
+    Needed whenever the set of interfaces it must serve grows: a
+    SIGHUP cannot create the sockets for a newly-served interface,
+    so the new LAN would silently answer nothing. Killing and
+    re-launching is the only way to get dnsmasq to bind them.
+    """
+    if _dnsmasq_running():
+        try:
+            with open(DNSMASQ_PIDFILE) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, signal.SIGTERM)
+            # Give it a moment to release port 67 before the new
+            # process tries to bind it.
+            for _ in range(30):
+                if not _dnsmasq_running():
+                    break
+                time.sleep(0.1)
+        except (OSError, ValueError) as exc:
+            return False, f"failed to stop dnsmasq: {exc}"
+    return _start_dnsmasq()
+
+
+def _sync_dnsmasq(iface: str) -> tuple[bool, str]:
+    """Bring dnsmasq's socket table in line with ``iface``'s config.
+
+    SIGHUP is enough when the interface is already being served (a
+    pool edit, a reservation change). If it is not, we must restart
+    so dnsmasq binds a socket for it — otherwise the DHCP clients on
+    that LAN send DISCOVERs into a void.
+    """
+    if not _dnsmasq_running():
+        return _start_dnsmasq()
+
+    conf_path = os.path.join(DNSMASQ_CONF_DIR, f"{iface}.conf")
+    if not os.path.exists(conf_path):
+        # Turning DHCP off on this interface. SIGHUP drops its
+        # range; we deliberately do not restart, because the other
+        # interfaces' sockets are still correct and a restart would
+        # needlessly interrupt live leases.
+        return _sighup_dnsmasq()
+
+    want = _iface_ip(iface)
+    if want and want not in _served_ifaces():
+        return _restart_dnsmasq()
+    return _sighup_dnsmasq()
+
+
 def _sighup_dnsmasq() -> tuple[bool, str]:
     """Send SIGHUP to dnsmasq so it re-reads /etc/dnsmasq.d/*.conf.
 
@@ -596,11 +708,17 @@ class RouterHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": msg}, 500)
                 return
         # If this router has DHCP enabled on any iface, start /
-        # SIGHUP dnsmasq. If not, leave dnsmasq alone (it'll just
+        # reload dnsmasq. If not, leave dnsmasq alone (it'll just
         # have an empty config dir, which is fine — it never
         # bound port 67).
+        #
+        # _sync_dnsmasq restarts rather than SIGHUPs when this is
+        # the first time dnsmasq serves `iface`: SIGHUP re-reads
+        # the config text but cannot create a listening socket for
+        # an interface the process didn't bind at startup, so the
+        # second LAN would silently answer no DISCOVERs.
         if DHCP_ENABLED_ANY or DHCP_RELAY_ENABLED_ANY:
-            ok, msg = _sighup_dnsmasq()
+            ok, msg = _sync_dnsmasq(iface)
             if not ok:
                 self._send_json({"ok": False, "error": msg}, 500)
                 return
@@ -662,7 +780,10 @@ class RouterHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": msg}, 500)
                 return
         if DHCP_ENABLED_ANY or DHCP_RELAY_ENABLED_ANY:
-            ok, msg = _sighup_dnsmasq()
+            # Same reasoning as the server path: a relay interface
+            # also needs a listening socket of its own before it can
+            # forward DISCOVERs, and SIGHUP cannot create one.
+            ok, msg = _sync_dnsmasq(iface)
             if not ok:
                 self._send_json({"ok": False, "error": msg}, 500)
                 return
