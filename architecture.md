@@ -553,6 +553,191 @@ This is the **first line of defense** the user has against an attacker.
 It is also the most striking demo in the system: a one-line ARP packet
 from the attacker changes the router's view of the network.
 
+### 6.2 Automatic IP management (DHCP)
+
+Before this, every address in the project was typed by the user. Now a
+router interface can hand out addresses itself, relay to another server,
+or pin a MAC to a fixed pool IP. All of it is configured from the same
+router panel, on a **DHCP tab**.
+
+An interface is in exactly one of three modes:
+
+```
+                 ┌─────────────────────────────────────┐
+                 │  the interface's mode selector      │
+                 └─────────────────────────────────────┘
+                      │            │            │
+              ┌───────▼──┐   ┌─────▼─────┐   ┌──▼────────┐
+              │   Off    │   │  Server   │   │  Relay    │
+              └──────────┘   └───────────┘   └───────────┘
+               hosts use     dnsmasq        dnsmasq
+               static IPs    answers        forwards
+                             DISCOVERs     DISCOVERs
+                                          upstream
+```
+
+**Server and relay are mutually exclusive.** The service layer rejects
+both-at-once with a 422, and the UI clears the other mode before writing
+so the user never hits that error.
+
+#### Server mode
+
+```
+USER picks "Server" on eth1, pool 10.30.10.100-200
+       │
+       ▼
+BROWSER:  PUT /api/projects/{id}/nodes/{nid}/interfaces/{iid}/dhcp
+         {enabled: true, pool_start, pool_end, lease_time, dns}
+       │
+       ▼
+BACKEND:  project_service.set_dhcp_config()
+         │
+         ├──► Validate: pool ⊂ bridge subnet, start < end,
+         │      60 ≤ lease_time ≤ 86400, each DNS entry a valid IPv4
+         │      (any violation → 422 with the list)
+         │
+         └──► Write the eight dhcp_* columns on project_interfaces
+                │
+                ▼
+              DATABASE   ← the user's intent is now durable
+
+       ── nothing on the wire yet ──
+
+USER clicks Start
+       │
+       ▼
+BACKEND:  project_lifecycle._push_dhcp() for each dhcp_enabled iface
+       │
+       ▼
+ROUTER:   PUT http://<router>:9090/dhcp
+         │
+         ├──► Write /etc/dnsmasq.d/<iface>.conf
+         │      interface=<iface>
+         │      bind-interfaces
+         │      dhcp-range=<start>,<end>,<lease>
+         │      dhcp-host=<mac>,<ip>[,<hostname>]   ← one per reservation
+         │
+         └──► SIGHUP dnsmasq (picks up the new config)
+
+CLIENT:   udhcpc -i <iface> -B -t 20 -T 3 -q -n
+         │
+         ├──► DISCOVER (broadcast — the -B flag sets the broadcast bit)
+         ├──◄─ OFFER    10.30.10.150
+         ├──► REQUEST  10.30.10.150
+         └──◄─ ACK      10.30.10.150 / mask / router / DNS
+```
+
+Two details in that flow are load-bearing and easy to get wrong:
+
+**The `-B` flag on `udhcpc`.** Without it busybox's udhcpc leaves the
+broadcast bit clear in its DISCOVER. dnsmasq then unicasts the OFFER to
+`yiaddr` — an address the client does not hold yet — so the OFFER is
+ARP-blackholed and the client never gets a lease. `-B` forces
+broadcast replies and is the difference between "DHCP works" and
+"DHCP silently never hands out an address."
+
+**Config is written to the DB immediately, but dnsmasq only reads it at
+start time.** So the UI says "applies on next project restart" rather
+than pretending the toggle is live.
+
+#### Reservations need a stable MAC
+
+A reservation says "this MAC always gets this IP". But Docker
+**randomizes the veth MAC every time a container is created** — so a
+reservation set before the first start would not match the MAC after
+the first restart.
+
+The fix is in `node_service.py`:
+
+```python
+def _deterministic_mac(iface_id: str) -> str:
+    h = hashlib.md5(iface_id.encode()).digest()
+    return f"02:{h[0]:02x}:{h[1]:02x}:{h[2]:02x}:{h[3]:02x}:{h[4]:02x}"
+```
+
+The first octet is `02` (locally administered, unicast) so it cannot
+collide with a vendor-assigned OUI. The value is passed to
+`net.connect(mac_address=…)` and persisted to
+`project_interfaces.mac_address`, so **the same interface keeps the same
+MAC across every restart** — which is what makes a reservation mean
+anything.
+
+#### Relay mode
+
+```
+USER picks "Relay" on eth2, upstream 10.30.10.1
+       │
+       ▼
+BACKEND:  project_service.set_dhcp_relay_config()
+         (server_ip must be a valid IPv4; the iface needs its own
+          IP — dnsmasq uses it as the giaddr)
+       │
+       ▼
+ROUTER:   writes `dhcp-relay=10.30.10.1,<iface>` into the same
+          /etc/dnsmasq.d/<iface>.conf
+```
+
+One DHCP server, many LANs. The relayed DISCOVER travels
+host → R2's LAN → R2's WAN → R1, and the OFFER comes back the same
+path. This is why the `-B` flag matters twice: the client on R2's LAN
+cannot be unicasted either.
+
+#### Reading the leases back
+
+```
+BROWSER:  GET /api/projects/{id}/nodes/{nid}/dhcp/leases   (every 5s)
+       │
+       ▼
+BACKEND:  router_proxy.get_dhcp_leases(container_id)
+       │
+       ▼
+ROUTER:   GET http://<router>:9090/dhcp/leases
+         │
+         └──► Parse /var/lib/misc/dnsmasq.leases
+               [{mac, ip, hostname, expires_at}, ...]
+
+BROWSER renders it as a table, soonest expiry first, with a
+human-readable remaining time ("4m", "2h") instead of a raw epoch.
+```
+
+### 6.3 Duplicate-IP detection
+
+A typo that puts the same address on two interfaces produces a network
+that is half-working in a way that is hard to debug: ARP replies
+flap, `ping` works one way, and nothing raises an error.
+
+Three layers catch it:
+
+| Layer | When | Response |
+|---|---|---|
+| `add_interface` | saving a new interface | 409 + the conflicting pairs |
+| `update_interface` | saving a changed interface | 409 + the conflicting pairs |
+| `start_project` | pressing Start | 409, refuses to spawn |
+
+The Start-time check is defence in depth: a project saved before the
+check existed, or one loaded from a file, would otherwise spawn
+half-broken.
+
+In the browser a **sticky banner** sits between the top bar and the
+canvas, polling `GET /projects/{id}/duplicate-ips` every 8s:
+
+```
+┌──────────────────────────────────────────────────┐
+│ Duplicate IP address                  [conflict] │
+│                                                  │
+│ Two interfaces share the same address. Change    │
+│ one of them before starting the project.         │
+│                                                  │
+│ 10.30.10.5 — Host-1 ↔ Router-1                   │
+│ 10.30.10.8 — Switch-1 ↔ Host-3         [Dismiss] │
+└──────────────────────────────────────────────────┘
+```
+
+It is a banner rather than a toast because a duplicate is a property of
+the *topology*, not of one action: it stays wrong until an address is
+fixed. Dismissing hides it until the next poll, so a mistake that is
+never actually fixed comes back.
+
 ---
 
 ## 7. What happens when the user triggers a communication
@@ -659,8 +844,17 @@ pedagogically valuable feature in the system.
 │  name          TEXT  ("eth0", "port1", "GigabitEthernet0/0")    │
 │  ip_address    TEXT  NULL  (NULL = unconfigured)                │
 │  subnet_mask   TEXT  ("/24", "/30")                             │
-│  mac_address   TEXT  (set at Start)                             │
+│  mac_address   TEXT  (set at Start — deterministic per iface)   │
 │  is_up         BOOLEAN (default true)                           │
+│                                                                 │
+│  ── automatic IP management (router interfaces only) ──         │
+│  dhcp_enabled        BOOLEAN (default false)                    │
+│  dhcp_pool_start     TEXT  NULL  ("10.30.10.100")               │
+│  dhcp_pool_end       TEXT  NULL  ("10.30.10.200")               │
+│  dhcp_lease_time     INTEGER (default 43200 = 12h)              │
+│  dhcp_dns            TEXT  NULL  ("8.8.8.8,8.8.4.4")             │
+│  dhcp_relay_enabled  BOOLEAN (default false)                    │
+│  dhcp_relay_server   TEXT  NULL  (upstream server IPv4)         │
 └─────────────────────────────────────────────────────────────────┘
         ▲                ▲
         │                │
@@ -682,6 +876,17 @@ pedagogically valuable feature in the system.
 │  link_id        UUID → project_links.id                         │
 │  container_id   TEXT  (the capture container)                   │
 │  file_path      TEXT  (host path to the NDJSON output)          │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─ project_dhcp_reservations ────────────────────────────────────┐
+│  id            UUID PRIMARY KEY                                 │
+│  iface_id      UUID → project_interfaces.id  ON DELETE CASCADE  │
+│  mac_address   MAC    ("02:86:88:52:f1:98")                     │
+│  ip_address    INET   ("10.30.10.150" — must be inside the pool)│
+│  hostname      TEXT   NULL  (dnsmasq's local-DNS name)           │
+│                                                                 │
+│  UNIQUE (iface_id, mac_address)                                 │
+│  UNIQUE (iface_id, ip_address)                                  │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─ communications (unchanged from today) ────────────────────────┐
@@ -709,6 +914,13 @@ The capture is **derived** because the user never configures it directly —
 the system creates one per link at Start time. It could be computed on
 the fly from the link's bridge_name, but having a row makes the
 container_id easy to find.
+
+`project_dhcp_reservations` is the one addition to the model that is not
+a primitive: it hangs off an interface rather than standing on its own,
+because a reservation only means something relative to a specific
+interface's pool. It is also **replace-in-place** through the API (a
+`PUT` with the full list) rather than CRUD-per-row, which keeps the
+"one MAC, one IP per interface" invariant in a single transaction.
 
 ---
 

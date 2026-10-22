@@ -96,6 +96,77 @@ curl localhost:9090/state/interfaces  # per-interface counters
 
 ---
 
+## 4a. DHCP debugging
+
+**"I turned DHCP on but the hosts have no address."** Almost always
+one of these, in order:
+
+```bash
+# 1. Did the config actually reach the router? If this file does
+#    not exist or has no dhcp-range, the project was not restarted
+#    after the toggle was flipped.
+docker exec <cn-...-rou-...> cat /etc/dnsmasq.d/eth1.conf
+
+# 2. Is dnsmasq running at all?
+docker exec <cn-...-rou-...> pgrep -a dnsmasq
+
+# 3. What has it handed out?
+docker exec <cn-...-rou-...> cat /var/lib/misc/dnsmasq.leases
+
+# 4. What does the host think happened? udhcpc logs go to the
+#    container's stdout.
+docker logs <cn-...-hos-...> 2>&1 | grep -i dhcp
+```
+
+**Cause 1 — not restarted.** The DHCP config is written to the
+database when the user presses Save, but `/etc/dnsmasq.d/*.conf` is
+only regenerated at Start. The UI says "applies on next project
+restart". Restart and it works.
+
+**Cause 2 — no IP on the router's interface.** dnsmasq binds to an
+interface, not a subnet; with no address on `eth1` it silently
+serves nothing. Check `ip -br addr` inside the router.
+
+**Cause 3 — the client never got a lease even though dnsmasq saw
+the DISCOVER.** Look at the wire view on the link. If you see a
+DISCOVER going out and nothing coming back, the OFFER is being
+**unicast to an address the client does not hold yet** and getting
+ARP-blackholed. The fix is the `-B` flag on `udhcpc` in
+`infra/hosts/node_entrypoint.sh` — it sets the broadcast bit in the
+DISCOVER so dnsmasq broadcasts the OFFER instead:
+
+```bash
+docker exec <cn-...-hos-...> grep udhcpc /app/node_entrypoint.sh
+# want: udhcpc -i "$IFACE" -B -t 20 -T 3 -q -n
+```
+
+A host sitting on the placeholder `x.x.x.2` address (rather than a
+pool address) is the tell-tale sign of a DISCOVER that went
+unanswered. Its ARP entry for the router will show `FAILED`.
+
+**"My reservation is ignored."** The dnsmasq config needs a
+`dhcp-host=` line matching the MAC *the container actually has*:
+
+```bash
+docker exec <cn-...-rou-...> grep dhcp-host /etc/dnsmasq.d/eth1.conf
+docker exec <cn-...-hos-...> cat /sys/class/net/eth1/address
+```
+
+If those disagree, the reservation was written against a stale MAC.
+Container MACs are derived deterministically from the interface id
+(`node_service._deterministic_mac`) and persisted to
+`project_interfaces.mac_address`, so this should not drift — but if
+you hand-edited the DB or restored an old dump, clear
+`mac_address` and restart so it is re-derived.
+
+**"Relay isn't relaying."** One interface cannot be both a server and
+a relay; the service layer rejects that with a 422. Also check the
+relay points at an address that is actually reachable from the
+relaying interface, and that the upstream server's pool is not
+inside the relayed subnet.
+
+---
+
 ## 5. Capture container / attack control
 
 ```bash

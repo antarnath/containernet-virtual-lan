@@ -41,6 +41,41 @@ canvas with live packet capture on the attacker's link and a
 
 Press `?` on the canvas for the keyboard shortcuts.
 
+### Quickstart: DHCP
+
+You no longer have to type every IP. A router can hand out addresses
+itself.
+
+1. Drop a **router** and two **hosts** on the canvas, and add one
+   interface to each (`eth0`).
+2. Give the router's interface an address — `10.30.10.1/24`. The
+   hosts get **no** IP; leave it blank.
+3. Wire the hosts to the router.
+4. Click the router, open the **DHCP** tab, set `eth0` to **Server**
+   with pool `10.30.10.100` – `10.30.10.200`, and press Save.
+5. Press **Start**.
+
+Within a few seconds both hosts hold an address from the pool. The
+DHCP tab's **Leases** table shows what was handed out and when it
+expires.
+
+Two things to know:
+
+- **DHCP applies on the next Start.** The config is saved to the
+  database immediately, but dnsmasq is only reconfigured when the
+  project starts.
+- **One interface is either a Server or a Relay, never both.** For
+  one DHCP server serving several LANs, set the far-side router's
+  interface to **Relay** and point it at the first router's IP.
+
+To pin a device to a fixed address, add a **reservation** under the
+Server settings — a MAC, an IP inside the pool, and an optional
+hostname. Containers keep the same MAC across restarts, so the
+reservation holds across a Stop / Start cycle.
+
+If two interfaces ever share an address, a red banner appears above
+the canvas and the project refuses to start until you fix it.
+
 ---
 
 ## What's in the box
@@ -59,6 +94,8 @@ live containers — there is no "demo mode".
 | 7 | **Attacks view**              | Click an attacker node or `/attacks` | Pick a mode (arp_spoof, tcp_flood, …), start, watch the anomaly detector fire. |
 | 8 | **Logs view**                 | `≡ Logs` button on canvas            | Live timeline of every lifecycle / wire / message / anomaly / attack event.   |
 | 9 | **Killer demo**               | First-time UX on `/projects`         | One-click 60-second ARP-spoof MITM scenario.                                  |
+| 10 | **Automatic IP management**  | Click a router → **DHCP** tab        | Turn a LAN's pool on, watch hosts get addresses, pin a MAC to a fixed IP.     |
+| 11 | **Duplicate-IP guard**       | Anywhere on the canvas               | A red banner names every conflicting address; Start refuses a broken project. |
 
 See [`M4_OVERVIEW.md`](./M4_OVERVIEW.md) for the detailed
 walk-through of every shipped phase and how the pieces fit together,
