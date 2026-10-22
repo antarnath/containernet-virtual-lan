@@ -315,7 +315,51 @@ try:
                     ).stdout for f in conf_files),
                     f"(files: {conf_files!r})")
 
-    # 17) Stop
+    # 17) The client side of the contract. Everything above only
+    # proves the *server* handed out an address; this proves the
+    # host actually installed it on its interface. The gap between
+    # those two is not hypothetical — udhcpc can log "broadcasting
+    # select for <ip>" and still leave the placeholder address in
+    # place if it dies before running its `bound` hook, and a
+    # lease file entry on the server looks perfectly healthy.
+    h_proc = subprocess.run(
+        ["docker", "ps", "--filter", f"label=containernet.project={pid}",
+         "--filter", "label=containernet.role=host", "--format", "{{.ID}}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    host_ids = [x.strip() for x in h_proc.stdout.split() if x.strip()]
+    expect_true("host container is running", len(host_ids) >= 1,
+                f"(got {host_ids!r})")
+
+    if host_ids:
+        # The project has two hosts: H1 on the DHCP LAN (10.30.10.0/24,
+        # no static IP) and H2 on a static LAN (10.30.20.0/24). Pick the
+        # one that actually sits on the DHCP LAN rather than trusting
+        # container ordering.
+        lan_addrs: list[str] = []
+        for hcid in host_ids:
+            addr_proc = subprocess.run(
+                ["docker", "exec", hcid, "ip", "-4", "-o", "addr", "show"],
+                capture_output=True, text=True, timeout=10,
+            )
+            found = [
+                line.split()[3].split("/")[0]
+                for line in addr_proc.stdout.splitlines()
+                if " 10.30.10." in line and "inet" in line
+            ]
+            if found:
+                lan_addrs = found
+                print(f"  DHCP host {hcid[:8]} addresses: {found}")
+                break
+            print(f"  host {hcid[:8]} is not on the DHCP LAN (skipping)")
+
+        expect_true("host holds an address on the DHCP LAN",
+                    len(lan_addrs) >= 1, f"(got {lan_addrs!r})")
+        expect_true("host address is inside the pool (not the placeholder)",
+                    any("10.30.10.100" <= a <= "10.30.10.200" for a in lan_addrs),
+                    f"(got {lan_addrs!r}; expected a 10.30.10.100-200 address)")
+
+    # 18) Stop
     code, _ = post(f"/projects/{pid}/stop", None)
     print(f"  stop returned {code}")
 

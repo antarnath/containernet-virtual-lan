@@ -120,8 +120,16 @@ if [ "$DHCP_ENABLED" = "1" ]; then
         # flushes the iface on `deconfig` which loses the
         # placeholder and makes the next DISCOVER unsendable
         # (kernel drops L2 bcasts from an iface with no IPv4).
+        #
+        # Do NOT pipe to `head` here. Once `head` has read its N
+        # lines it closes the pipe, and udhcpc's next write takes
+        # SIGPIPE and dies *before* it runs the `bound` hook that
+        # installs the lease address. The symptom is a host that
+        # logs "broadcasting select for <ip>" and then sits on the
+        # placeholder address forever, while the server's lease file
+        # shows it got a lease. Redirect to stderr whole.
         udhcpc -i "$IFACE" -B -t 20 -T 3 -q -n \
-          -s /app/udhcpc_placeholder.sh 2>&1 | head -5 >&2 || true
+          -s /app/udhcpc_placeholder.sh 2>&1 >&2 || true
       fi
     done
   else
@@ -136,8 +144,9 @@ if [ "$DHCP_ENABLED" = "1" ]; then
       fi
       if command -v udhcpc >/dev/null 2>&1; then
         echo "node_entrypoint: udhcpc on $IFACE" >&2
+        # Same SIGPIPE caveat as above — no pipe here either.
         udhcpc -i "$IFACE" -B -t 20 -T 3 -q -n \
-          -s /app/udhcpc_placeholder.sh 2>&1 | head -5 >&2 || true
+          -s /app/udhcpc_placeholder.sh 2>&1 >&2 || true
       fi
     done
   fi
