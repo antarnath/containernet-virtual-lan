@@ -25,6 +25,16 @@ export interface CanvasNodeData {
   container_status: ContainerStatus;
   attack_mode: string | null;
   interfaces: ProjectInterface[];
+  /**
+   * Live DHCP lease per interface id, for interfaces that got their
+   * address from a router rather than from the user.
+   *
+   * `interfaces[].ip_address` only ever holds what a human typed, so
+   * a DHCP client reads as empty there and the card would say "no ip"
+   * while the host is up and perfectly addressable. The Canvas
+   * polls /node-ips and stamps the leases in here.
+   */
+  leased_ips?: Record<string, string>;
   /** Phase 03: this node has an open anomaly. */
   has_anomaly?: boolean;
   /** Phase 06: this attacker has an active signal in the last 10s. */
@@ -50,7 +60,7 @@ const STATUS_TONE: Record<ContainerStatus, 'idle' | 'starting' | 'running' | 'er
 };
 
 function CanvasNodeImpl({ data, selected }: NodeProps<CanvasNodeData>) {
-  const { kind, name, container_status, attack_mode, interfaces, has_anomaly, has_active_attack } = data;
+  const { kind, name, container_status, attack_mode, interfaces, leased_ips, has_anomaly, has_active_attack } = data;
   const anomaly = !!has_anomaly;
   const attacking = !!has_active_attack;
 
@@ -169,7 +179,16 @@ function CanvasNodeImpl({ data, selected }: NodeProps<CanvasNodeData>) {
                 {iface.name}
               </div>
               <div className="text-2xs font-mono text-text-muted truncate pr-1">
-                {iface.ip_address ?? (
+                {iface.ip_address ? (
+                  iface.ip_address
+                ) : leased_ips?.[iface.id] ? (
+                  // Leased address. Slightly brighter than the
+                  // "no ip" placeholder so a working DHCP client
+                  // doesn't read as unconfigured.
+                  <span title="Assigned by DHCP">
+                    {leased_ips[iface.id]}
+                  </span>
+                ) : (
                   <span className="italic text-text-muted/60">no ip</span>
                 )}
               </div>

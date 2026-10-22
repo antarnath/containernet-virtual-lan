@@ -46,6 +46,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import { useProjectStore } from '../store/projectStore';
+import { ProjectsAPI } from '../api/client';
 import { useRealtimeStore } from '../store/realtimeStore';
 import { toast } from '../components/ui';
 import type {
@@ -75,7 +76,16 @@ function nodeToFlow(
   n: ProjectNode,
   hasAnomaly: boolean,
   hasActiveAttack: boolean,
+  leasedIPs: Record<string, string>,
 ): Node<CanvasNodeData> {
+  // Narrow the project-wide lease map to this node's own interfaces,
+  // so a card can look up by bare iface id.
+  const leased: Record<string, string> = {};
+  for (const i of n.interfaces) {
+    const ip = leasedIPs[i.id];
+    if (ip) leased[i.id] = ip;
+  }
+
   return {
     id: n.id,
     type: 'canvasNode',
@@ -86,6 +96,7 @@ function nodeToFlow(
       container_status: n.container_status,
       attack_mode: n.attack_mode,
       interfaces: n.interfaces,
+      leased_ips: leased,
       has_anomaly: hasAnomaly,
       has_active_attack: hasActiveAttack,
     },
@@ -180,6 +191,43 @@ function CanvasInner({
   const [nodes, setNodes] = useState<Node<CanvasNodeData>[]>([]);
   const [edges, setEdges] = useState<Edge<CanvasEdgeData>[]>([]);
 
+  // ─── live DHCP leases ──────────────────────────────────────────
+  //
+  // A DHCP client's `ip_address` is NULL in the project payload, so
+  // without this every leased host's card reads "no ip" even while
+  // it's up and holding a perfectly good address. Polled on the same
+  // cadence as the panel's lease table so a lease landing mid-session
+  // shows up on the canvas.
+  const [leasedIPs, setLeasedIPs] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refresh() {
+      try {
+        const res = await ProjectsAPI.nodeIPs(projectId);
+        if (cancelled) return;
+        const next: Record<string, string> = {};
+        for (const ifaces of Object.values(res.nodes)) {
+          for (const i of ifaces) {
+            if (i.ip && i.source === 'dhcp') next[i.iface_id] = i.ip;
+          }
+        }
+        setLeasedIPs(next);
+      } catch {
+        // A failed poll keeps the last known leases rather than
+        // blanking every card back to "no ip".
+      }
+    }
+
+    void refresh();
+    const t = window.setInterval(() => void refresh(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [projectId]);
+
   // Hydrate from the project store on first mount + whenever the
   // server-side state changes. Also re-runs when the anomaly set
   // changes so the warn outline appears/disappears in real time,
@@ -193,6 +241,7 @@ function CanvasInner({
           n,
           anomalousNodeIds.has(n.id),
           activeAttackers.has(n.id),
+          leasedIPs,
         ),
       ),
     );
@@ -223,7 +272,7 @@ function CanvasInner({
         edges: (window as unknown as { __cnDebug: { edges?: unknown } }).__cnDebug,
       });
     }
-  }, [current, projectId, anomalousNodeIds, activeAttackers]);
+  }, [current, projectId, anomalousNodeIds, activeAttackers, leasedIPs]);
 
   // If the project is missing on first mount, fetch it.
   useEffect(() => {
