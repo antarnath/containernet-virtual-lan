@@ -62,7 +62,7 @@ mask, and every default route. Real networks automate this.
 | 1.7 | **IPv6 addressing on interfaces** | 1 week | High | `ip -6 addr add` in the router agent (the `ip` shell is already there). |
 | 1.8 | **IPAM panel** — every used IP per project | 1 day | Medium | Show all IPs in use, with owner / subnet / status. |
 | 1.9 | **Subnet calculator** in the IP-typing UI | 2-3 days | Medium | As the user types a mask, show network / broadcast / usable range. |
-| 1.10 | **Duplicate-IP detection** | 1 day | High | Warn on save if two interfaces share an IP. Common student mistake. |
+| 1.10 | ~~**Duplicate-IP detection**~~ ✅ **shipped in M5-01** | 1 day | High | Warn on save if two interfaces share an IP. Common student mistake. 409 `{error: "duplicate_ips", conflicts: [...]}` on `POST`/`PUT /projects/<pid>` and on `POST /projects/<pid>/start`. Sticky `DuplicateIPBanner` above the canvas polls `GET /projects/<pid>/duplicate-ips` and clears itself when the last conflict is fixed. Verified by `tests/manual/test_duplicate_ip_detection.py`. |
 | 1.11 | **Auto-pick the next free IP** in a subnet | 1 day | High | "Add a host to this LAN, give it the next free IP." |
 
 **Why first:** items 1.1, 1.2, 1.3 are the difference between "Packet
@@ -470,10 +470,11 @@ Total: **~3-4 months of focused work** to go from "Packet Tracer" to
 If you want a 12-month plan:
 
 **Q1 — Make it usable**
-- 1.1 Default gateway auto-suggest
-- 1.2 DHCP server on the router
-- 1.3 DHCP relay
-- 1.10 Duplicate-IP detection
+- ~~1.1 Default gateway auto-suggest~~ ✅
+- ~~1.2 DHCP server on the router~~ ✅
+- ~~1.3 DHCP relay~~ ✅
+- ~~1.4 DHCP reservations~~ ✅
+- ~~1.10 Duplicate-IP detection~~ ✅
 - 5.1 Source NAT / PAT
 - 5.2 Destination NAT
 - 7.1 Interface counters + sparklines
