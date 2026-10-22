@@ -47,6 +47,12 @@ const LEASE_POLL_MS = 5000;
 const MAC_RE = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;
 const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
 
+// 12 hours — the backend's allowed range is 60..86400, and this is
+// what the DHCP tab shows for an interface that has never been
+// configured. Using the same value here as the fallback in the
+// re-sync effect keeps the two in step.
+const DEFAULT_LEASE_SECONDS = 43200;
+
 export interface DhcpTabProps {
   projectId: string;
   nodeId: string;
@@ -144,7 +150,11 @@ function InterfaceDhcpCard({
   );
   const [poolStart, setPoolStart] = useState(iface.dhcp_pool_start ?? '');
   const [poolEnd, setPoolEnd] = useState(iface.dhcp_pool_end ?? '');
-  const [leaseTime, setLeaseTime] = useState(String(iface.dhcp_lease_time));
+  const [leaseTime, setLeaseTime] = useState(
+    iface.dhcp_lease_time == null
+      ? String(DEFAULT_LEASE_SECONDS)
+      : String(iface.dhcp_lease_time),
+  );
   const [dns, setDns] = useState(iface.dhcp_dns ?? '');
   const [relayServer, setRelayServer] = useState(iface.dhcp_relay_server ?? '');
 
@@ -154,17 +164,39 @@ function InterfaceDhcpCard({
 
   // Re-sync when the server returns a newer version of the row
   // (e.g. after another tab saved a change).
+  //
+  // Keyed on the persisted VALUES, not on ``iface``. The parent
+  // builds these objects from ``ifaces.map(...)``, so ``iface`` is
+  // a fresh object literal on every parent render — and the leases
+  // poll re-renders the panel every 5s. Depending on ``iface``
+  // re-ran this effect on every tick and wiped whatever the user
+  // had typed back to the last-saved (empty) value, so the pool
+  // fields never survived long enough to be submitted. Depending
+  // on the individual fields means the effect only fires when a
+  // value genuinely changed on the server.
+  const serverEnabled = !!iface.dhcp_enabled;
+  const relayEnabled = !!iface.dhcp_relay_enabled;
+  const poolStartSaved = iface.dhcp_pool_start ?? '';
+  const poolEndSaved = iface.dhcp_pool_end ?? '';
+  const leaseTimeSaved = iface.dhcp_lease_time;
+  const dnsSaved = iface.dhcp_dns ?? '';
+  const relayServerSaved = iface.dhcp_relay_server ?? '';
+
   useEffect(() => {
-    setMode(
-      iface.dhcp_enabled ? 'server' : iface.dhcp_relay_enabled ? 'relay' : 'off',
+    setMode(serverEnabled ? 'server' : relayEnabled ? 'relay' : 'off');
+    setPoolStart(poolStartSaved);
+    setPoolEnd(poolEndSaved);
+    // A null lease_time renders as the string "null", which then
+    // fails the 60-86400 range check on save. Fall back to the
+    // 12-hour default the form intends.
+    setLeaseTime(
+      leaseTimeSaved == null ? String(DEFAULT_LEASE_SECONDS) : String(leaseTimeSaved),
     );
-    setPoolStart(iface.dhcp_pool_start ?? '');
-    setPoolEnd(iface.dhcp_pool_end ?? '');
-    setLeaseTime(String(iface.dhcp_lease_time));
-    setDns(iface.dhcp_dns ?? '');
-    setRelayServer(iface.dhcp_relay_server ?? '');
+    setDns(dnsSaved);
+    setRelayServer(relayServerSaved);
     setDirty(false);
-  }, [iface]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverEnabled, relayEnabled, poolStartSaved, poolEndSaved, leaseTimeSaved, dnsSaved, relayServerSaved]);
 
   function markDirty() {
     setDirty(true);
