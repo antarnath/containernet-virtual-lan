@@ -544,6 +544,59 @@ async def get_interface_dhcp(
     return _iface_out(iface)
 
 
+@router.get("/{project_id}/nodes/{node_id}/dhcp/leases")
+async def get_router_dhcp_leases(
+    project_id: str,
+    node_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the live DHCP leases for a router node.
+
+    M5-01 feature 1.2. Polls the router agent's ``GET /dhcp/leases``
+    (which parses ``/var/lib/misc/dnsmasq.leases``) and returns the
+    leases plus which of this router's interfaces currently run a
+    DHCP server, so the UI can label the table.
+
+    Returns 404 when the node isn't a router or isn't running; the
+    ``leases`` list is empty (never null) so the frontend can render
+    an empty table without a null check.
+    """
+    node = await project_service.get_node(session, project_id, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="node not found")
+    kind = node.kind.value if hasattr(node.kind, "value") else str(node.kind)
+    if kind != NodeKind.ROUTER.value:
+        raise HTTPException(status_code=400, detail="node is not a router")
+
+    # Which ifaces are running a DHCP server? Used so the UI can
+    # show "enabled on eth1" without re-deriving it client-side.
+    server_ifaces = [
+        i.name for i in (node.interfaces or [])
+        if getattr(i, "dhcp_enabled", False)
+    ]
+    relay_ifaces = [
+        i.name for i in (node.interfaces or [])
+        if getattr(i, "dhcp_relay_enabled", False)
+    ]
+
+    leases: list[dict] = []
+    error: str | None = None
+    if node.container_status == "running" and node.container_id:
+        result = await router_proxy.get_dhcp_leases(node.container_id)
+        leases = result.leases
+        error = result.error
+    else:
+        error = "router container is not running"
+
+    return {
+        "node_id": node.id,
+        "leases": leases,
+        "server_ifaces": server_ifaces,
+        "relay_ifaces": relay_ifaces,
+        "error": error,
+    }
+
+
 # ─── DHCP relay endpoints (M5-01 / 1.3) ──────────────────────────────────
 
 @router.put(
@@ -731,6 +784,31 @@ async def delete_link(
 
 
 # ─── Lifecycle (phase 02) ─────────────────────────────────────────────
+
+@router.get("/{project_id}/duplicate-ips")
+async def list_duplicate_ips(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return every duplicate-IP conflict in the project.
+
+    M5-01 feature 1.10. The save path (``add_interface`` /
+    ``update_interface``) already returns a 409 with the same
+    conflict list, and ``POST /start`` re-checks before spawning.
+    This GET exists so the UI can render a *sticky* banner: a
+    conflict introduced before the user opens the project (e.g.
+    loaded from an old file) is visible immediately, not only at
+    the moment a save fails.
+
+    Returns 200 with ``{conflicts: []}`` when the project is clean,
+    so the frontend can poll it unconditionally.
+    """
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    conflicts = await project_service.find_duplicate_ips(session, project_id)
+    return {"project_id": project_id, "conflicts": conflicts}
+
 
 @router.post("/{project_id}/start")
 async def start_project(

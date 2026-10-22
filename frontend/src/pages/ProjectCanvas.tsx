@@ -18,6 +18,7 @@ import { useRealtimeStore } from '../store/realtimeStore';
 import { Button, Card, LoadingSkeleton, StatusPill, toast } from '../components/ui';
 import { Canvas, type OpenNodePayload } from '../canvas';
 import { ProjectsAPI } from '../api/client';
+import { DuplicateIPBanner } from '../components/DuplicateIPBanner';
 import { RouterPanel } from '../panels/RouterPanel';
 import { HostPanel } from '../panels/HostPanel';
 import { AttackerPanel } from '../attacks/AttackerPanel';
@@ -276,6 +277,16 @@ export default function ProjectCanvas() {
             </Button>
           )}
         </div>
+      </div>
+
+      {/* Sticky duplicate-IP banner. Sits between the top bar and
+          the canvas so it's visible no matter which node panel is
+          open, and re-checks whenever an interface changes. */}
+      <div className="flex-shrink-0 px-4 pt-3">
+        <DuplicateIPBanner
+          projectId={current.id}
+          refreshKey={current.updated_at}
+        />
       </div>
 
       {/* Canvas surface + optional node panel */}

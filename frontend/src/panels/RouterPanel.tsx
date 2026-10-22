@@ -1,7 +1,7 @@
 // RouterPanel — side panel that opens when the user clicks a router
 // on the canvas. Polls the live router state every 2s, shows
-// routes / ARP / interfaces in three tabs, and surfaces anomaly
-// events from the realtime store (the project-wide WebSocket
+// routes / ARP / interfaces / DHCP in four tabs, and surfaces
+// anomaly events from the realtime store (the project-wide WebSocket
 // connection).
 //
 // Design system contract (§7.3): header strip + tabs + tab body +
@@ -22,10 +22,11 @@ import {
   type TableColumn,
 } from '../components/ui';
 import { ProjectsAPI, type AnomalyEvent, type NodeLiveState } from '../api/client';
+import { DhcpTab } from './DhcpTab';
 import { useProjectStore } from '../store/projectStore';
 import { useRealtimeStore } from '../store/realtimeStore';
 
-type Tab = 'routes' | 'arp' | 'ifaces';
+type Tab = 'routes' | 'arp' | 'ifaces' | 'dhcp';
 
 export type { AnomalyEvent };
 
@@ -157,11 +158,20 @@ export function RouterPanel({
           Interfaces
           {state?.ifaces ? <span className="ml-1 text-2xs text-text-muted">({state.ifaces.length})</span> : null}
         </TabButton>
+        <TabButton active={tab === 'dhcp'} onClick={() => setTab('dhcp')}>
+          DHCP
+        </TabButton>
       </div>
 
       {/* Tab body */}
       <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
-        {loading && !state ? (
+        {/* The DHCP tab is config-first: it reads and writes the
+            database, not the live agent, so it stays usable when
+            the project is stopped and the state poll is failing.
+            Everything else below needs live agent output. */}
+        {tab === 'dhcp' ? (
+          <DhcpTab projectId={projectId} nodeId={nodeId} />
+        ) : loading && !state ? (
           <LoadingSkeleton width="100%" height="120px" />
         ) : state?.error ? (
           <Card>

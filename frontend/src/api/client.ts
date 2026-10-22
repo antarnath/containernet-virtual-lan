@@ -6,6 +6,12 @@
 
 import axios from 'axios';
 import type {
+  DHCPLeasesResponse,
+  DHCPReservationInput,
+  DHCPReservationsResponse,
+  DuplicateIPConflict,
+  InterfaceDHCPConfig,
+  InterfaceDHCPRelayConfig,
   Project,
   ProjectCreate,
   ProjectDetail,
@@ -54,6 +60,19 @@ export const ProjectsAPI = {
   },
   delete: async (projectId: string): Promise<void> => {
     await api.delete(`/projects/${projectId}`);
+  },
+
+  /** Every duplicate-IP conflict in the project. Returns an empty
+   *  list when the project is clean, so callers can poll it without
+   *  special-casing the happy path. */
+  duplicateIPs: async (
+    projectId: string,
+  ): Promise<{ project_id: string; conflicts: DuplicateIPConflict[] }> => {
+    const { data } = await api.get<{
+      project_id: string;
+      conflicts: DuplicateIPConflict[];
+    }>(`/projects/${projectId}/duplicate-ips`);
+    return data;
   },
 
   // ─── Lifecycle (phase 02) ────────────────────────────────────────
@@ -285,6 +304,103 @@ export const ProjectsAPI = {
         `/projects/${projectId}/attacks/${attackerId}/stop`,
       );
       return data;
+    },
+  },
+
+  // ─── DHCP (M5-01 / 1.2 + 1.3 + 1.4) ─────────────────────────────
+  // Every DHCP write returns the updated ProjectInterface so the
+  // panel can reflect the server's persisted state without a
+  // second round-trip.
+  dhcp: {
+    /** Configure the DHCP *server* on a router interface. */
+    setServer: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+      body: InterfaceDHCPConfig,
+    ): Promise<ProjectInterface> => {
+      const { data } = await api.put<ProjectInterface>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp`,
+        body,
+      );
+      return data;
+    },
+
+    /** Read back the DHCP server config for a router interface. */
+    getServer: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+    ): Promise<ProjectInterface> => {
+      const { data } = await api.get<ProjectInterface>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp`,
+      );
+      return data;
+    },
+
+    /** Configure the DHCP *relay* on a router interface. */
+    setRelay: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+      body: InterfaceDHCPRelayConfig,
+    ): Promise<ProjectInterface> => {
+      const { data } = await api.put<ProjectInterface>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp/relay`,
+        body,
+      );
+      return data;
+    },
+
+    /** Live leases across every DHCP server on this router. */
+    leases: async (
+      projectId: string,
+      nodeId: string,
+    ): Promise<DHCPLeasesResponse> => {
+      const { data } = await api.get<DHCPLeasesResponse>(
+        `/projects/${projectId}/nodes/${nodeId}/dhcp/leases`,
+      );
+      return data;
+    },
+
+    /** List the MAC → IP reservations on a router interface. */
+    listReservations: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+    ): Promise<DHCPReservationsResponse> => {
+      const { data } = await api.get<DHCPReservationsResponse>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp/reservations`,
+      );
+      return data;
+    },
+
+    /** Replace the full reservation list on a router interface.
+     *  Send the desired end-state, not a delta — an empty list
+     *  clears every reservation on that interface. */
+    setReservations: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+      reservations: DHCPReservationInput[],
+    ): Promise<DHCPReservationsResponse> => {
+      const { data } = await api.put<DHCPReservationsResponse>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp/reservations`,
+        { reservations },
+      );
+      return data;
+    },
+
+    /** Delete a single reservation. 204 whether or not it existed. */
+    deleteReservation: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+      reservationId: string,
+    ): Promise<void> => {
+      await api.delete(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp/reservations/${reservationId}`,
+      );
     },
   },
 
