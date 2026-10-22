@@ -21,7 +21,7 @@
 // explicit so users aren't confused when the toggle flips but the
 // leases table stays empty.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ProjectsAPI } from '../api/client';
 import {
@@ -40,6 +40,7 @@ import type {
   DHCPLeasesResponse,
   DHCPReservation,
   DHCPReservationInput,
+  DHCPPoolSuggestion,
   ProjectInterface,
 } from '../types';
 
@@ -162,6 +163,52 @@ function InterfaceDhcpCard({
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // ─── auto-suggested pool ───────────────────────────────────────
+  //
+  // Every field of a working DHCP server is derivable from what the
+  // user already configured: the interface's own address and the
+  // link's subnet. Making them type four fields per interface was
+  // busywork — and a frequent source of the red validation errors,
+  // since the rules (pool inside the subnet, router's own IP
+  // excluded) aren't obvious. So ask the backend for a pool it
+  // already knows will pass, and pre-fill.
+  //
+  // Advisory throughout: the fields stay editable and `dirty` is NOT
+  // set, so pre-filling never looks like an unsaved edit. A failed
+  // suggestion is silently ignored — an interface with no IP or no
+  // wired link has no sensible pool, and the user will find out from
+  // Save's error message rather than from a blocking banner.
+  const [suggestion, setSuggestion] = useState<DHCPPoolSuggestion | null>(null);
+  const suggestedRef = useRef(false);
+
+  const applySuggestion = useCallback(async () => {
+    try {
+      const s = await ProjectsAPI.dhcp.suggestPool(projectId, nodeId, iface.id);
+      setSuggestion(s);
+      // Only fill fields the user hasn't already set. Re-running after
+      // they typed would otherwise stomp their edits.
+      setPoolStart((cur) => (cur.trim() ? cur : s.pool_start));
+      setPoolEnd((cur) => (cur.trim() ? cur : s.pool_end));
+      setDns((cur) => (cur.trim() ? cur : s.dns));
+      // Tell the re-sync effect the fields now hold a suggestion, so
+      // it stops treating "empty" as the user's intent and wiping it.
+      suggestedRef.current = true;
+    } catch {
+      setSuggestion(null);
+    }
+  }, [projectId, nodeId, iface.id]);
+
+  // Fetch once so the hint can explain itself, and again whenever
+  // the panel comes back after a re-sync reset the fields to ''.
+  useEffect(() => {
+    if (mode === 'server' || suggestedRef.current) {
+      void applySuggestion();
+    }
+    // Only re-fetch when the identity changes — re-running on every
+    // keystroke would fight the user for the field contents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applySuggestion, mode]);
+
   // Re-sync when the server returns a newer version of the row
   // (e.g. after another tab saved a change).
   //
@@ -184,15 +231,20 @@ function InterfaceDhcpCard({
 
   useEffect(() => {
     setMode(serverEnabled ? 'server' : relayEnabled ? 'relay' : 'off');
-    setPoolStart(poolStartSaved);
-    setPoolEnd(poolEndSaved);
+    // Once a pool has been suggested, fall back to the suggestion
+    // instead of blanking the fields. The server legitimately stores
+    // NULL until the first Save, and wiping a valid pre-fill on every
+    // re-sync would reintroduce the "I typed it and it vanished" bug
+    // this effect was already rewritten to fix.
+    setPoolStart(poolStartSaved || (suggestion?.pool_start ?? ''));
+    setPoolEnd(poolEndSaved || (suggestion?.pool_end ?? ''));
     // A null lease_time renders as the string "null", which then
     // fails the 60-86400 range check on save. Fall back to the
     // 12-hour default the form intends.
     setLeaseTime(
       leaseTimeSaved == null ? String(DEFAULT_LEASE_SECONDS) : String(leaseTimeSaved),
     );
-    setDns(dnsSaved);
+    setDns(dnsSaved || (suggestion?.dns ?? ''));
     setRelayServer(relayServerSaved);
     setDirty(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -387,6 +439,12 @@ function InterfaceDhcpCard({
               </Field>
             </div>
             <ReservationsEditor projectId={projectId} nodeId={nodeId} iface={iface} />
+            {suggestion && (
+              <div className="text-2xs text-text-muted">
+                Pool and DNS were filled in from {suggestion.subnet_cidr} —{' '}
+                {suggestion.why}
+              </div>
+            )}
           </div>
         )}
 

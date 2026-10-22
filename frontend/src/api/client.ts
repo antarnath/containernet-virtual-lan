@@ -11,6 +11,7 @@ import type {
   DHCPReservationInput,
   DHCPReservationsResponse,
   DuplicateIPConflict,
+  DHCPPoolSuggestion,
   InterfaceDHCPConfig,
   InterfaceDHCPRelayConfig,
   Project,
@@ -349,6 +350,22 @@ export const ProjectsAPI = {
     ): Promise<ProjectInterface> => {
       const { data } = await api.get<ProjectInterface>(
         `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp`,
+      );
+      return data;
+    },
+
+    /**
+     * A pool the backend knows will pass validation, derived from
+     * this interface's own address and its link's subnet. Throws a
+     * 422 when there's no IP or no wired subnet to derive one from.
+     */
+    suggestPool: async (
+      projectId: string,
+      nodeId: string,
+      ifaceId: string,
+    ): Promise<DHCPPoolSuggestion> => {
+      const { data } = await api.get<DHCPPoolSuggestion>(
+        `/projects/${projectId}/nodes/${nodeId}/interfaces/${ifaceId}/dhcp/suggest`,
       );
       return data;
     },

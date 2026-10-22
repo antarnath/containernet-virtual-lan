@@ -24,6 +24,7 @@ Endpoints (see phases/milestone-4/phase_m4-01 §1.3 for the full list)
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import threading
@@ -480,6 +481,124 @@ async def delete_interface(
 
 
 # ─── DHCP endpoints (M5-01 / 1.2) ──────────────────────────────────────────
+
+@router.get("/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp/suggest")
+async def suggest_dhcp_pool(
+    project_id: str,
+    node_id: str,  # noqa: ARG001 (path param, kept for URL symmetry)
+    iface_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Suggest a valid pool + DNS for this interface.
+
+    Turning DHCP on meant typing four fields per interface, and every
+    one of them is derivable from the topology the user already set
+    up: the interface's own address and its link's subnet. The pool
+    the validator would accept is always the same shape, so compute
+    it server-side rather than making the user rediscover the rules
+    (pool inside the subnet, router's own IP excluded, start < end).
+
+    Returns ``{pool_start, pool_end, dns, subnet_cidr, why}``. The
+    suggestion is advisory — the fields stay editable, and nothing is
+    persisted here.
+    """
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    iface = next(
+        (i for n in project.nodes for i in (n.interfaces or []) if i.id == iface_id),
+        None,
+    )
+    if iface is None:
+        raise HTTPException(status_code=404, detail="interface not found")
+
+    link = next(
+        (l for l in project.links
+         if l.iface_a_id == iface_id or l.iface_b_id == iface_id),
+        None,
+    )
+    subnet = link.subnet_cidr if link else None
+    if not subnet or not iface.ip_address:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "cannot_suggest",
+                "message": (
+                    "Give this interface an IP and wire it to a link first — "
+                    "a DHCP pool has to fit inside the link's subnet."
+                ),
+            },
+        )
+
+    try:
+        net = ipaddress.ip_network(subnet, strict=False)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "cannot_suggest",
+                "message": f"link subnet {subnet!r} is invalid: {exc}",
+            },
+        )
+
+    own = ipaddress.IPv4Address(str(iface.ip_address))
+
+    # Conventional layout, and the one the rest of the system already
+    # assumes: gateway at .1, pool from .100 up.
+    #
+    # The .100 floor is not arbitrary. ``node_service._subnet_placeholder_ip``
+    # hands a DHCP client the .2 address *before* it has a lease — the
+    # kernel needs some source address to emit a DHCPDISCOVER — and its
+    # docstring calls .2 free precisely "because the DHCP pool starts at
+    # .100". Suggesting a pool that begins at .2 would let dnsmasq lease
+    # the placeholder to a client and break that assumption.
+    POOL_START_OFFSET = 100
+    POOL_SIZE = 100
+
+    broadcast = int(net.broadcast_address)
+    start_num = int(net.network_address) + POOL_START_OFFSET
+    # Stay clear of the router's own address even on a subnet laid out
+    # unusually enough to put .1 outside the pool we just chose.
+    if int(own) >= start_num and int(own) <= broadcast - 1:
+        start_num = int(own) + 1
+
+    if start_num >= broadcast:
+        # Subnet too small for a 100-address block at .100 (a /29
+        # has 6 usable). Fall back to whatever room exists above the
+        # router, which is still valid — just narrower.
+        start_num = max(int(own), int(net.network_address) + 1) + 1
+        if start_num >= broadcast:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "cannot_suggest",
+                    "message": (
+                        f"{subnet} has no room above {iface.ip_address} for a pool."
+                    ),
+                },
+            )
+
+    end_num = min(start_num + POOL_SIZE - 1, broadcast - 1)
+
+    pool_start = str(ipaddress.IPv4Address(start_num))
+    pool_end = str(ipaddress.IPv4Address(end_num))
+
+    return {
+        "pool_start": pool_start,
+        "pool_end": pool_end,
+        # Point clients at the router itself. dnsmasq answers on the
+        # gateway address and it keeps the lab self-contained — no
+        # dependency on 8.8.8.8 being reachable from the containers.
+        "dns": str(own),
+        "subnet_cidr": subnet,
+        "why": (
+            f"the conventional .100–.200 range on {subnet}, clear of this "
+            f"interface's own {iface.ip_address}. Edit any field if you want "
+            f"a different range."
+        ),
+    }
+
 
 @router.put(
     "/{project_id}/nodes/{node_id}/interfaces/{iface_id}/dhcp",

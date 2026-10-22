@@ -162,6 +162,20 @@ export interface InterfaceDHCPConfig {
   dns?: string | null;
 }
 
+/**
+ * A valid pool the backend derived from the interface's own address
+ * and its link's subnet. Advisory only — the DHCP tab pre-fills from
+ * it and the user can still edit every field. Nothing is persisted.
+ */
+export interface DHCPPoolSuggestion {
+  pool_start: string;
+  pool_end: string;
+  dns: string;
+  subnet_cidr: string;
+  /** Human-readable explanation, shown as a hint under the fields. */
+  why: string;
+}
+
 /** Body for PUT .../dhcp/relay */
 export interface InterfaceDHCPRelayConfig {
   enabled: boolean;
