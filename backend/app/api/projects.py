@@ -597,6 +597,70 @@ async def get_router_dhcp_leases(
     }
 
 
+async def collect_dhcp_leases(project) -> dict[str, str]:
+    """Return ``{iface_id: leased_ip}`` for every leased interface.
+
+    Thin re-export of the resolver's helper so the API layer and the
+    services layer agree on one implementation.
+    """
+    return await route_resolver.collect_dhcp_leases(project)
+
+
+@router.get("/{project_id}/node-ips")
+async def get_project_node_ips(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return each node's *effective* IPv4, for DHCP-assigned hosts.
+
+    ``project_interfaces.ip_address`` only ever holds what the user
+    typed. A host that leases its address from a router has no row
+    value there, so every consumer that resolves a node by its
+    stored IP — the Send modal's destination dropdown, the route
+    preview, the "ping this host" affordance — sees an empty string
+    and cannot address a DHCP client at all.
+
+    So: for each interface, report the stored IP when there is one,
+    otherwise the live DHCP lease whose MAC matches that interface's
+    MAC.
+
+    Returns ``{node_id: [{iface_id, name, ip, source}]}`` where
+    ``source`` is ``"static"`` or ``"dhcp"``. Interfaces with no
+    address at all (DHCP configured but not yet leased, or a switch
+    port) are included with ``ip: null`` so callers can distinguish
+    "no address yet" from "not a thing".
+    """
+    project = await project_service.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    leased = await collect_dhcp_leases(project)
+
+    out: dict[str, list[dict]] = {}
+    for node in project.nodes:
+        ifaces: list[dict] = []
+        for iface in (node.interfaces or []):
+            stored = iface.ip_address
+            if stored:
+                ifaces.append({
+                    "iface_id": iface.id,
+                    "name": iface.name,
+                    "ip": str(stored),
+                    "source": "static",
+                })
+                continue
+            ip = leased.get(iface.id)
+            ifaces.append({
+                "iface_id": iface.id,
+                "name": iface.name,
+                "ip": ip,
+                "source": "dhcp" if ip else None,
+            })
+        out[node.id] = ifaces
+
+    return {"project_id": project_id, "nodes": out}
+
+
 # ─── DHCP relay endpoints (M5-01 / 1.3) ──────────────────────────────────
 
 @router.put(
@@ -1162,9 +1226,12 @@ async def resolve_route(
     unreachable, or 200 with ``{"error": "routing_loop",
     "visited": [...]}`` if a loop is detected.
     """
+    project = await project_service.get_project(session, project_id)
+    leased = await collect_dhcp_leases(project) if project is not None else {}
+
     try:
         hops = await route_resolver.resolve_route(
-            session, project_id, src, dst
+            session, project_id, src, dst, leased_ips=leased
         )
     except route_resolver.RouteLoop as exc:
         return {

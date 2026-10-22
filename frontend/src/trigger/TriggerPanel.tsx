@@ -20,12 +20,13 @@
 // debounce (200ms) — cheap, since resolve_route is a pure function
 // of the project topology and we have the topology in memory.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button, StatusPill, toast } from '../components/ui';
+import { ProjectsAPI } from '../api/client';
 import { TriggerAPI } from './api';
 import type { Hop, RouteResponse } from './types';
-import type { ProjectNode } from '../types';
+import type { NodeIPsResponse, ProjectNode } from '../types';
 
 export type Protocol = 'HTTP' | 'TCP' | 'ICMP';
 
@@ -78,6 +79,61 @@ export function TriggerPanel({
   const [protocol, setProtocol] = useState<Protocol>('HTTP');
   const [payload, setPayload] = useState('hello');
 
+  // ─── live node addresses ────────────────────────────────────
+  //
+  // `project_interfaces.ip_address` only ever holds what the user
+  // typed, so a DHCP client reads as empty there and the destination
+  // dropdown would have nothing to send to. Ask the backend for each
+  // node's effective address instead — the stored one, or the live
+  // lease matched by the interface's deterministic MAC.
+  //
+  // Refreshed while the modal is open because a lease can land after
+  // the user opened it (and a lease can expire), but not on an
+  // interval forever — this is a modal, not a dashboard.
+  const [nodeIPs, setNodeIPs] = useState<NodeIPsResponse['nodes']>({});
+
+  const refreshNodeIPs = useCallback(async () => {
+    try {
+      const res = await ProjectsAPI.nodeIPs(projectId);
+      setNodeIPs(res.nodes);
+    } catch {
+      // Fall back to whatever the last successful poll gave us; a
+      // failed poll should not blank the dropdowns.
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void refreshNodeIPs();
+    const t = window.setInterval(() => void refreshNodeIPs(), 5000);
+    return () => window.clearInterval(t);
+  }, [refreshNodeIPs]);
+
+  // First interface that actually has an address, preferring a
+  // static one so a dual-homed host resolves deterministically.
+  const ipForNode = useCallback(
+    (nodeId: string): string => {
+      const live = nodeIPs[nodeId] ?? [];
+      const withIp = live.filter((i) => i.ip);
+      const staticFirst = withIp.find((i) => i.source === 'static');
+      const chosen = staticFirst ?? withIp[0];
+      if (chosen?.ip) return chosen.ip;
+      // Nothing live — fall back to what the user typed, so the
+      // modal still works for a stopped project.
+      const node = settable.find((n) => n.id === nodeId);
+      return node?.interfaces.find((i) => i.ip_address)?.ip_address ?? '';
+    },
+    [nodeIPs, settable],
+  );
+
+  // Which settable nodes have no address we can send to at all.
+  // Rendered in the dropdown rather than silently omitted, so the
+  // user learns *why* a host can't be picked instead of finding it
+  // missing.
+  const addressOf = useCallback(
+    (n: ProjectNode): string => ipForNode(n.id),
+    [ipForNode],
+  );
+
   // ─── route preview state ────────────────────────────────────
   const [route, setRoute] = useState<
     | { kind: 'idle' }
@@ -94,13 +150,10 @@ export function TriggerPanel({
   // ─── resolve the destination string for the resolver ───────
   const effectiveDst = useMemo(() => {
     if (dstKind === 'ip') return dstIp.trim();
-    const node = settable.find((n) => n.id === dstNodeId);
-    if (!node) return '';
-    // Use the first interface IP — the resolver will then match
-    // it via the link's subnet_cidr.
-    const iface = node.interfaces.find((i) => i.ip_address);
-    return iface?.ip_address ?? '';
-  }, [dstKind, dstNodeId, dstIp, settable]);
+    // Use the node's effective address (stored, or live DHCP lease).
+    // The resolver matches it against each link's subnet_cidr.
+    return ipForNode(dstNodeId);
+  }, [dstKind, dstNodeId, dstIp, ipForNode]);
 
   // ─── debounced route resolution ────────────────────────────
   const debounceRef = useRef<number | null>(null);
@@ -278,11 +331,14 @@ export function TriggerPanel({
                     {settable
                       .filter((n) => n.id !== srcNodeId)
                       .map((n) => {
-                        const ip = n.interfaces.find((i) => i.ip_address)?.ip_address;
+                        const ip = addressOf(n);
+                        const fromDhcp =
+                          (nodeIPs[n.id] ?? []).some((i) => i.source === 'dhcp');
                         return (
                           <option key={n.id} value={n.id}>
                             {n.name}
-                            {ip ? ` — ${ip}` : ''}
+                            {ip ? ` — ${ip}` : ' — no address yet'}
+                            {fromDhcp && ip ? ' (DHCP)' : ''}
                           </option>
                         );
                       })}

@@ -93,13 +93,20 @@ async def send_message(
             f"only host / server / attacker can send messages"
         )
 
+    # Live leases: a DHCP client's `ip_address` is NULL, so both the
+    # node lookup below and the route walk need the leased address.
+    leased = await route_resolver.collect_dhcp_leases(project)
+
+    def _addr(iface) -> str | None:
+        return iface.ip_address or leased.get(iface.id)
+
     # Pick dst_node_id from the project if it's an interface on
     # a known host. Otherwise leave None (the agent will fall back
     # to plain IP).
     if dst_node_id is None:
         for n in project.nodes:
             for i in n.interfaces:
-                if i.ip_address == dst_ip:
+                if _addr(i) == dst_ip:
                     dst_node_id = n.id
                     break
             if dst_node_id:
@@ -111,7 +118,7 @@ async def send_message(
     # the source of truth even if the client was stale).
     try:
         hops = await route_resolver.resolve_route(
-            session, project_id, src_node_id, dst_ip
+            session, project_id, src_node_id, dst_ip, leased_ips=leased
         )
         hop_link_ids = [h.link_id for h in hops if h.link_id]
     except route_resolver.RouteError as exc:

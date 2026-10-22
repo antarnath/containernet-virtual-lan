@@ -110,6 +110,54 @@ class RouteLoop(Exception):
 MAX_HOPS = 16
 
 
+# ─── DHCP lease lookup ─────────────────────────────────────────────────
+
+async def collect_dhcp_leases(project) -> dict[str, str]:
+    """Return ``{iface_id: leased_ip}`` for every leased interface.
+
+    Polls each running router's lease table once and matches by MAC.
+    Interfaces get a deterministic MAC at attach time
+    (``node_service._deterministic_mac``), persisted to
+    ``project_interfaces.mac_address``, so the match is exact rather
+    than best-effort.
+
+    Shared by ``GET /node-ips``, :func:`resolve_route` and the send
+    path — all three need a leased host's real address, and each router
+    scan is a container exec, so they must not duplicate it. A router
+    whose agent is unreachable is skipped rather than raising: leases
+    are enrichment, and callers degrade to "static addresses only"
+    when they're missing.
+    """
+    leases_by_mac: dict[str, str] = {}
+    for node in project.nodes:
+        kind = node.kind.value if hasattr(node.kind, "value") else str(node.kind)
+        if kind != "router":
+            continue
+        if node.container_status != "running" or not node.container_id:
+            continue
+        try:
+            from app.services import router_proxy
+            result = await router_proxy.get_dhcp_leases(node.container_id)
+        except Exception:
+            continue
+        for lease in result.leases:
+            mac = str(lease.get("mac") or "").lower()
+            ip = lease.get("ip")
+            if mac and ip:
+                leases_by_mac.setdefault(mac, ip)
+
+    leased: dict[str, str] = {}
+    for node in project.nodes:
+        for iface in (node.interfaces or []):
+            if iface.ip_address:
+                continue
+            mac = (iface.mac_address or "").lower()
+            ip = leases_by_mac.get(mac) if mac else None
+            if ip:
+                leased[iface.id] = ip
+    return leased
+
+
 # ─── main entry point ─────────────────────────────────────────────────
 
 async def resolve_route(
@@ -117,8 +165,20 @@ async def resolve_route(
     project_id: str,
     src_node_id: str,
     dst_ip: str,
+    leased_ips: dict[str, str] | None = None,
 ) -> list[Hop]:
     """Return the hop list for ``src_node_id`` → ``dst_ip``.
+
+    ``leased_ips`` maps ``iface_id -> ip`` for interfaces whose address
+    came from DHCP rather than from the user. ``project_interfaces``
+    only records what a human typed, so a DHCP client has a NULL
+    ``ip_address`` there — and both the destination-match tests below
+    key on that column. Without the leases, a walk toward a DHCP host
+    can never terminate on the host: it runs to MAX_HOPS and raises
+    RouteLoop, or stops one hop short at the router's egress iface.
+    Callers that already know the live leases (the Send modal's route
+    preview, the send path) should pass them; omitting the argument
+    preserves the old DB-only behaviour.
 
     Raises ``RouteError`` if the destination is unreachable.
     Raises ``RouteLoop`` if the walk exceeds ``MAX_HOPS`` (the
@@ -147,6 +207,15 @@ async def resolve_route(
         adjacency.setdefault(node_a.id, []).append((node_b, link, iface_a, iface_b))
         adjacency.setdefault(node_b.id, []).append((node_a, link, iface_b, iface_a))
 
+    # Effective address per interface: what the user typed, else the
+    # live DHCP lease. Every endpoint test below reads this instead of
+    # the raw column, so a leased host is a real destination rather
+    # than an address-less gap the walk can't land on.
+    def addr_of(iface: ProjectInterface | None) -> str | None:
+        if iface is None:
+            return None
+        return iface.ip_address or (leased_ips or {}).get(iface.id)
+
     # Build iface + link metadata for "is dst on a directly-attached subnet?" tests.
     node_subnets: dict[str, list[tuple[ProjectInterface, ProjectLink]]] = {}
     for link in project.links:
@@ -154,7 +223,7 @@ async def resolve_route(
             iface = _iface_by_id(project, iface_id)
             if iface is None:
                 continue
-            if iface.ip_address and link.subnet_cidr:
+            if addr_of(iface) and link.subnet_cidr:
                 try:
                     net = ipaddress.ip_network(link.subnet_cidr, strict=False)
                     node_subnets.setdefault(iface.node_id, []).append((iface, link))
@@ -231,7 +300,8 @@ async def resolve_route(
         #    the current node? (Either our own IP matches, or the
         #    dst is in one of the link subnets we're attached to.)
         for iface, link in node_subnets.get(current_node.id, []):
-            if iface.ip_address and link.subnet_cidr:
+            my_ip = addr_of(iface)
+            if my_ip and link.subnet_cidr:
                 try:
                     net = ipaddress.ip_network(link.subnet_cidr, strict=False)
                 except ValueError:
@@ -247,8 +317,8 @@ async def resolve_route(
                         node_name=current_node.name,
                         node_kind=_kind_str(current_node.kind),
                         iface_name=iface.name,
-                        iface_ip=iface.ip_address,
-                        link_id=link.id if str(dst) != iface.ip_address else None,
+                        iface_ip=my_ip,
+                        link_id=link.id if str(dst) != my_ip else None,
                         link_subnet=link.subnet_cidr,
                     ))
                     return hops
@@ -396,7 +466,7 @@ async def resolve_route(
             node_name=next_neighbor.name,
             node_kind=_kind_str(next_neighbor.kind),
             iface_name=next_peer_iface.name if next_peer_iface else None,
-            iface_ip=next_peer_iface.ip_address if next_peer_iface else None,
+            iface_ip=addr_of(next_peer_iface),
             link_id=next_link.id,
             link_subnet=next_link.subnet_cidr,
         ))
@@ -404,9 +474,10 @@ async def resolve_route(
         prev_link = next_link
 
         # 5) If the new current_node is the destination (matched
-        #    on iface_ip), we're done.
+        #    on its effective address, lease included), we're done.
         for iface, _ in node_subnets.get(current_node.id, []):
-            if iface.ip_address and str(dst) == iface.ip_address:
+            my_ip = addr_of(iface)
+            if my_ip and str(dst) == my_ip:
                 return hops
 
 

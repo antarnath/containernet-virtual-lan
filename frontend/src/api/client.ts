@@ -7,6 +7,7 @@
 import axios from 'axios';
 import type {
   DHCPLeasesResponse,
+  NodeIPsResponse,
   DHCPReservationInput,
   DHCPReservationsResponse,
   DuplicateIPConflict,
@@ -60,6 +61,20 @@ export const ProjectsAPI = {
   },
   delete: async (projectId: string): Promise<void> => {
     await api.delete(`/projects/${projectId}`);
+  },
+
+  /**
+   * Each node's effective IPv4 — the stored address for a statically
+   * configured interface, or the live DHCP lease for a DHCP client.
+   * Polls every running router's lease table, so prefer this over
+   * reading `interfaces[].ip_address` whenever the address a user
+   * actually sends traffic to matters.
+   */
+  nodeIPs: async (projectId: string): Promise<NodeIPsResponse> => {
+    const { data } = await api.get<NodeIPsResponse>(
+      `/projects/${projectId}/node-ips`,
+    );
+    return data;
   },
 
   /** Every duplicate-IP conflict in the project. Returns an empty

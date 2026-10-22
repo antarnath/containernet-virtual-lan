@@ -190,6 +190,31 @@ export interface DHCPLeasesResponse {
   error: string | null;
 }
 
+/** One interface's effective IPv4, as returned by /node-ips. */
+export interface NodeInterfaceIP {
+  iface_id: string;
+  name: string;
+  /** Null when the interface has no address at all (no static IP
+   *  typed and, if DHCP-peered, no lease yet). */
+  ip: string | null;
+  /** "static" = the user typed it; "dhcp" = resolved from a live
+   *  lease; null = no address yet. */
+  source: 'static' | 'dhcp' | null;
+}
+
+/**
+ * Response of GET /api/projects/<pid>/node-ips.
+ *
+ * Exists because `project_interfaces.ip_address` only holds what the
+ * user typed. A DHCP client has no value there, so anything that
+ * resolves a node by its stored IP — the Send modal's destination
+ * dropdown above all — cannot address it.
+ */
+export interface NodeIPsResponse {
+  project_id: string;
+  nodes: Record<string, NodeInterfaceIP[]>;
+}
+
 /** A MAC → fixed-IP binding (M5-01 / 1.4). */
 export interface DHCPReservation {
   id: string;
